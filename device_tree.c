@@ -20,7 +20,9 @@
 
 #include "config.h"
 #include "qemu-common.h"
+#include "qemu/error-report.h"
 #include "sysemu/device_tree.h"
+#include "sysemu/sysemu.h"
 #include "hw/loader.h"
 #include "qemu/option.h"
 #include "qemu/config-file.h"
@@ -40,6 +42,10 @@ void *create_device_tree(int *sizep)
     if (ret < 0) {
         goto fail;
     }
+    ret = fdt_finish_reservemap(fdt);
+    if (ret < 0) {
+        goto fail;
+    }
     ret = fdt_begin_node(fdt, "");
     if (ret < 0) {
         goto fail;
@@ -54,13 +60,13 @@ void *create_device_tree(int *sizep)
     }
     ret = fdt_open_into(fdt, fdt, *sizep);
     if (ret) {
-        fprintf(stderr, "Unable to copy device tree in memory\n");
+        error_report("Unable to copy device tree in memory");
         exit(1);
     }
 
     return fdt;
 fail:
-    fprintf(stderr, "%s Couldn't create dt: %s\n", __func__, fdt_strerror(ret));
+    error_report("%s Couldn't create dt: %s", __func__, fdt_strerror(ret));
     exit(1);
 }
 
@@ -74,8 +80,8 @@ void *load_device_tree(const char *filename_path, int *sizep)
     *sizep = 0;
     dt_size = get_image_size(filename_path);
     if (dt_size < 0) {
-        printf("Unable to get size of device tree file '%s'\n",
-            filename_path);
+        error_report("Unable to get size of device tree file '%s'",
+                     filename_path);
         goto fail;
     }
 
@@ -87,21 +93,21 @@ void *load_device_tree(const char *filename_path, int *sizep)
 
     dt_file_load_size = load_image(filename_path, fdt);
     if (dt_file_load_size < 0) {
-        printf("Unable to open device tree file '%s'\n",
-               filename_path);
+        error_report("Unable to open device tree file '%s'",
+                     filename_path);
         goto fail;
     }
 
     ret = fdt_open_into(fdt, fdt, dt_size);
     if (ret) {
-        printf("Unable to copy device tree in memory\n");
+        error_report("Unable to copy device tree in memory");
         goto fail;
     }
 
     /* Check sanity of device tree */
     if (fdt_check_header(fdt)) {
-        printf ("Device tree file loaded into memory is invalid: %s\n",
-            filename_path);
+        error_report("Device tree file loaded into memory is invalid: %s",
+                     filename_path);
         goto fail;
     }
     *sizep = dt_size;
@@ -118,68 +124,68 @@ static int findnode_nofail(void *fdt, const char *node_path)
 
     offset = fdt_path_offset(fdt, node_path);
     if (offset < 0) {
-        fprintf(stderr, "%s Couldn't find node %s: %s\n", __func__, node_path,
-                fdt_strerror(offset));
+        error_report("%s Couldn't find node %s: %s", __func__, node_path,
+                     fdt_strerror(offset));
         exit(1);
     }
 
     return offset;
 }
 
-int qemu_devtree_setprop(void *fdt, const char *node_path,
-                         const char *property, const void *val_array, int size)
+int qemu_fdt_setprop(void *fdt, const char *node_path,
+                     const char *property, const void *val, int size)
 {
     int r;
 
-    r = fdt_setprop(fdt, findnode_nofail(fdt, node_path), property, val_array, size);
+    r = fdt_setprop(fdt, findnode_nofail(fdt, node_path), property, val, size);
     if (r < 0) {
-        fprintf(stderr, "%s: Couldn't set %s/%s: %s\n", __func__, node_path,
-                property, fdt_strerror(r));
+        error_report("%s: Couldn't set %s/%s: %s", __func__, node_path,
+                     property, fdt_strerror(r));
         exit(1);
     }
 
     return r;
 }
 
-int qemu_devtree_setprop_cell(void *fdt, const char *node_path,
-                              const char *property, uint32_t val)
+int qemu_fdt_setprop_cell(void *fdt, const char *node_path,
+                          const char *property, uint32_t val)
 {
     int r;
 
     r = fdt_setprop_cell(fdt, findnode_nofail(fdt, node_path), property, val);
     if (r < 0) {
-        fprintf(stderr, "%s: Couldn't set %s/%s = %#08x: %s\n", __func__,
-                node_path, property, val, fdt_strerror(r));
+        error_report("%s: Couldn't set %s/%s = %#08x: %s", __func__,
+                     node_path, property, val, fdt_strerror(r));
         exit(1);
     }
 
     return r;
 }
 
-int qemu_devtree_setprop_u64(void *fdt, const char *node_path,
-                             const char *property, uint64_t val)
+int qemu_fdt_setprop_u64(void *fdt, const char *node_path,
+                         const char *property, uint64_t val)
 {
     val = cpu_to_be64(val);
-    return qemu_devtree_setprop(fdt, node_path, property, &val, sizeof(val));
+    return qemu_fdt_setprop(fdt, node_path, property, &val, sizeof(val));
 }
 
-int qemu_devtree_setprop_string(void *fdt, const char *node_path,
-                                const char *property, const char *string)
+int qemu_fdt_setprop_string(void *fdt, const char *node_path,
+                            const char *property, const char *string)
 {
     int r;
 
     r = fdt_setprop_string(fdt, findnode_nofail(fdt, node_path), property, string);
     if (r < 0) {
-        fprintf(stderr, "%s: Couldn't set %s/%s = %s: %s\n", __func__,
-                node_path, property, string, fdt_strerror(r));
+        error_report("%s: Couldn't set %s/%s = %s: %s", __func__,
+                     node_path, property, string, fdt_strerror(r));
         exit(1);
     }
 
     return r;
 }
 
-const void *qemu_devtree_getprop(void *fdt, const char *node_path,
-                                 const char *property, int *lenp)
+const void *qemu_fdt_getprop(void *fdt, const char *node_path,
+                             const char *property, int *lenp)
 {
     int len;
     const void *r;
@@ -188,49 +194,49 @@ const void *qemu_devtree_getprop(void *fdt, const char *node_path,
     }
     r = fdt_getprop(fdt, findnode_nofail(fdt, node_path), property, lenp);
     if (!r) {
-        fprintf(stderr, "%s: Couldn't get %s/%s: %s\n", __func__,
-                node_path, property, fdt_strerror(*lenp));
+        error_report("%s: Couldn't get %s/%s: %s", __func__,
+                     node_path, property, fdt_strerror(*lenp));
         exit(1);
     }
     return r;
 }
 
-uint32_t qemu_devtree_getprop_cell(void *fdt, const char *node_path,
-                                   const char *property)
+uint32_t qemu_fdt_getprop_cell(void *fdt, const char *node_path,
+                               const char *property)
 {
     int len;
-    const uint32_t *p = qemu_devtree_getprop(fdt, node_path, property, &len);
+    const uint32_t *p = qemu_fdt_getprop(fdt, node_path, property, &len);
     if (len != 4) {
-        fprintf(stderr, "%s: %s/%s not 4 bytes long (not a cell?)\n",
-                __func__, node_path, property);
+        error_report("%s: %s/%s not 4 bytes long (not a cell?)",
+                     __func__, node_path, property);
         exit(1);
     }
     return be32_to_cpu(*p);
 }
 
-uint32_t qemu_devtree_get_phandle(void *fdt, const char *path)
+uint32_t qemu_fdt_get_phandle(void *fdt, const char *path)
 {
     uint32_t r;
 
     r = fdt_get_phandle(fdt, findnode_nofail(fdt, path));
-    if (r <= 0) {
-        fprintf(stderr, "%s: Couldn't get phandle for %s: %s\n", __func__,
-                path, fdt_strerror(r));
+    if (r == 0) {
+        error_report("%s: Couldn't get phandle for %s: %s", __func__,
+                     path, fdt_strerror(r));
         exit(1);
     }
 
     return r;
 }
 
-int qemu_devtree_setprop_phandle(void *fdt, const char *node_path,
-                                 const char *property,
-                                 const char *target_node_path)
+int qemu_fdt_setprop_phandle(void *fdt, const char *node_path,
+                             const char *property,
+                             const char *target_node_path)
 {
-    uint32_t phandle = qemu_devtree_get_phandle(fdt, target_node_path);
-    return qemu_devtree_setprop_cell(fdt, node_path, property, phandle);
+    uint32_t phandle = qemu_fdt_get_phandle(fdt, target_node_path);
+    return qemu_fdt_setprop_cell(fdt, node_path, property, phandle);
 }
 
-uint32_t qemu_devtree_alloc_phandle(void *fdt)
+uint32_t qemu_fdt_alloc_phandle(void *fdt)
 {
     static int phandle = 0x0;
 
@@ -239,15 +245,8 @@ uint32_t qemu_devtree_alloc_phandle(void *fdt)
      * which phandle id to start allocting phandles.
      */
     if (!phandle) {
-        QemuOpts *machine_opts;
-        machine_opts = qemu_opts_find(qemu_find_opts("machine"), 0);
-        if (machine_opts) {
-            const char *phandle_start;
-            phandle_start = qemu_opt_get(machine_opts, "phandle_start");
-            if (phandle_start) {
-                phandle = strtoul(phandle_start, NULL, 0);
-            }
-        }
+        phandle = qemu_opt_get_number(qemu_get_machine_opts(),
+                                      "phandle_start", 0);
     }
 
     if (!phandle) {
@@ -261,21 +260,21 @@ uint32_t qemu_devtree_alloc_phandle(void *fdt)
     return phandle++;
 }
 
-int qemu_devtree_nop_node(void *fdt, const char *node_path)
+int qemu_fdt_nop_node(void *fdt, const char *node_path)
 {
     int r;
 
     r = fdt_nop_node(fdt, findnode_nofail(fdt, node_path));
     if (r < 0) {
-        fprintf(stderr, "%s: Couldn't nop node %s: %s\n", __func__, node_path,
-                fdt_strerror(r));
+        error_report("%s: Couldn't nop node %s: %s", __func__, node_path,
+                     fdt_strerror(r));
         exit(1);
     }
 
     return r;
 }
 
-int qemu_devtree_add_subnode(void *fdt, const char *name)
+int qemu_fdt_add_subnode(void *fdt, const char *name)
 {
     char *dupname = g_strdup(name);
     char *basename = strrchr(dupname, '/');
@@ -296,8 +295,8 @@ int qemu_devtree_add_subnode(void *fdt, const char *name)
 
     retval = fdt_add_subnode(fdt, parent, basename);
     if (retval < 0) {
-        fprintf(stderr, "FDT: Failed to create subnode %s: %s\n", name,
-                fdt_strerror(retval));
+        error_report("FDT: Failed to create subnode %s: %s", name,
+                     fdt_strerror(retval));
         exit(1);
     }
 
@@ -305,17 +304,45 @@ int qemu_devtree_add_subnode(void *fdt, const char *name)
     return retval;
 }
 
-void qemu_devtree_dumpdtb(void *fdt, int size)
+void qemu_fdt_dumpdtb(void *fdt, int size)
 {
-    QemuOpts *machine_opts;
+    const char *dumpdtb = qemu_opt_get(qemu_get_machine_opts(), "dumpdtb");
 
-    machine_opts = qemu_opts_find(qemu_find_opts("machine"), 0);
-    if (machine_opts) {
-        const char *dumpdtb = qemu_opt_get(machine_opts, "dumpdtb");
-        if (dumpdtb) {
-            /* Dump the dtb to a file and quit */
-            exit(g_file_set_contents(dumpdtb, fdt, size, NULL) ? 0 : 1);
+    if (dumpdtb) {
+        /* Dump the dtb to a file and quit */
+        exit(g_file_set_contents(dumpdtb, fdt, size, NULL) ? 0 : 1);
+    }
+}
+
+int qemu_fdt_setprop_sized_cells_from_array(void *fdt,
+                                            const char *node_path,
+                                            const char *property,
+                                            int numvalues,
+                                            uint64_t *values)
+{
+    uint32_t *propcells;
+    uint64_t value;
+    int cellnum, vnum, ncells;
+    uint32_t hival;
+
+    propcells = g_new0(uint32_t, numvalues * 2);
+
+    cellnum = 0;
+    for (vnum = 0; vnum < numvalues; vnum++) {
+        ncells = values[vnum * 2];
+        if (ncells != 1 && ncells != 2) {
+            return -1;
         }
+        value = values[vnum * 2 + 1];
+        hival = cpu_to_be32(value >> 32);
+        if (ncells > 1) {
+            propcells[cellnum++] = hival;
+        } else if (hival != 0) {
+            return -1;
+        }
+        propcells[cellnum++] = cpu_to_be32(value);
     }
 
+    return qemu_fdt_setprop(fdt, node_path, property, propcells,
+                            cellnum * sizeof(uint32_t));
 }

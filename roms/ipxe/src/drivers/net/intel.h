@@ -138,10 +138,10 @@ enum intel_descriptor_status {
  * Minimum value is 8, since the descriptor ring length must be a
  * multiple of 128.
  */
-#define INTEL_NUM_RX_DESC 8
+#define INTEL_NUM_RX_DESC 16
 
 /** Receive descriptor ring fill level */
-#define INTEL_RX_FILL 4
+#define INTEL_RX_FILL 8
 
 /** Receive buffer length */
 #define INTEL_RX_MAX_LEN 2048
@@ -155,6 +155,9 @@ enum intel_descriptor_status {
  * requires a minimum of 16 TX descriptors.
  */
 #define INTEL_NUM_TX_DESC 16
+
+/** Transmit descriptor ring maximum fill level */
+#define INTEL_TX_FILL ( INTEL_NUM_TX_DESC - 1 )
 
 /** Receive/Transmit Descriptor Base Address Low (offset) */
 #define INTEL_xDBAL 0x00
@@ -174,18 +177,6 @@ enum intel_descriptor_status {
 /** Receive/Transmit Descriptor Control (offset) */
 #define INTEL_xDCTL 0x28
 #define INTEL_xDCTL_ENABLE	0x02000000UL	/**< Queue enable */
-
-/** Receive Descriptor Head */
-#define INTEL_RDH ( INTEL_RD + INTEL_xDH )
-
-/** Receive Descriptor Tail */
-#define INTEL_RDT ( INTEL_RD + INTEL_xDT )
-
-/** Transmit Descriptor Head */
-#define INTEL_TDH ( INTEL_TD + INTEL_xDH )
-
-/** Transmit Descriptor Tail */
-#define INTEL_TDT ( INTEL_TD + INTEL_xDT )
 
 /** Receive Address Low */
 #define INTEL_RAL0 0x05400UL
@@ -238,6 +229,8 @@ struct intel_nic {
 	void *regs;
 	/** Port number (for multi-port devices) */
 	unsigned int port;
+	/** Flags */
+	unsigned int flags;
 
 	/** EEPROM */
 	struct nvs_device eeprom;
@@ -253,5 +246,22 @@ struct intel_nic {
 	/** Receive I/O buffers */
 	struct io_buffer *rx_iobuf[INTEL_NUM_RX_DESC];
 };
+
+/** Driver flags */
+enum intel_flags {
+	/** PBS/PBA errata workaround required */
+	INTEL_PBS_ERRATA = 0x0001,
+};
+
+extern int intel_create_ring ( struct intel_nic *intel,
+			       struct intel_ring *ring );
+extern void intel_destroy_ring ( struct intel_nic *intel,
+				 struct intel_ring *ring );
+extern void intel_refill_rx ( struct intel_nic *intel );
+extern void intel_empty_rx ( struct intel_nic *intel );
+extern int intel_transmit ( struct net_device *netdev,
+			    struct io_buffer *iobuf );
+extern void intel_poll_tx ( struct net_device *netdev );
+extern void intel_poll_rx ( struct net_device *netdev );
 
 #endif /* _INTEL_H */

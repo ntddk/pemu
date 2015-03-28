@@ -47,6 +47,7 @@
 #include "hw/nvram/eeprom93xx.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/dma.h"
+#include "qemu/bitops.h"
 
 /* QEMU sends frames smaller than 60 bytes to ethernet nics.
  * Such frames are rejected by real nics and their emulations.
@@ -105,7 +106,6 @@
 #define PCI_IO_SIZE             64
 #define PCI_FLASH_SIZE          (128 * KiB)
 
-#define BIT(n) (1 << (n))
 #define BITS(n, m) (((0xffffffffU << (31 - n)) >> (31 - n + m)) << m)
 
 /* The SCB accepts the following controls for the Tx and Rx units: */
@@ -409,7 +409,7 @@ static void disable_interrupt(EEPRO100State * s)
 {
     if (s->int_stat) {
         TRACE(INT, logout("interrupt disabled\n"));
-        qemu_irq_lower(s->dev.irq[0]);
+        pci_irq_deassert(&s->dev);
         s->int_stat = 0;
     }
 }
@@ -418,7 +418,7 @@ static void enable_interrupt(EEPRO100State * s)
 {
     if (!s->int_stat) {
         TRACE(INT, logout("interrupt enabled\n"));
-        qemu_irq_raise(s->dev.irq[0]);
+        pci_irq_assert(&s->dev);
         s->int_stat = 1;
     }
 }
@@ -1217,7 +1217,6 @@ static void eepro100_write_mdi(EEPRO100State *s)
                 break;
             case 1:            /* Status Register */
                 missing("not writable");
-                data = s->mdimem[reg];
                 break;
             case 2:            /* PHY Identification Register (Word 1) */
             case 3:            /* PHY Identification Register (Word 2) */
@@ -1230,7 +1229,8 @@ static void eepro100_write_mdi(EEPRO100State *s)
             default:
                 missing("not implemented");
             }
-            s->mdimem[reg] = data;
+            s->mdimem[reg] &= eepro100_mdi_mask[reg];
+            s->mdimem[reg] |= data & ~eepro100_mdi_mask[reg];
         } else if (opcode == 2) {
             /* MDI read */
             switch (reg) {
@@ -1784,8 +1784,7 @@ static ssize_t nic_receive(NetClientState *nc, const uint8_t * buf, size_t size)
 static const VMStateDescription vmstate_eepro100 = {
     .version_id = 3,
     .minimum_version_id = 2,
-    .minimum_version_id_old = 2,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_PCI_DEVICE(dev, EEPRO100State),
         VMSTATE_UNUSED(32),
         VMSTATE_BUFFER(mult, EEPRO100State),
@@ -1844,9 +1843,6 @@ static void pci_nic_uninit(PCIDevice *pci_dev)
 {
     EEPRO100State *s = DO_UPCAST(EEPRO100State, dev, pci_dev);
 
-    memory_region_destroy(&s->mmio_bar);
-    memory_region_destroy(&s->io_bar);
-    memory_region_destroy(&s->flash_bar);
     vmstate_unregister(&pci_dev->qdev, s->vmstate, s);
     eeprom93xx_free(&pci_dev->qdev, s->eeprom);
     qemu_del_nic(s->nic);
@@ -1876,15 +1872,15 @@ static int e100_nic_init(PCIDevice *pci_dev)
     s->eeprom = eeprom93xx_new(&pci_dev->qdev, EEPROM_SIZE);
 
     /* Handler for memory-mapped I/O */
-    memory_region_init_io(&s->mmio_bar, &eepro100_ops, s, "eepro100-mmio",
-                          PCI_MEM_SIZE);
+    memory_region_init_io(&s->mmio_bar, OBJECT(s), &eepro100_ops, s,
+                          "eepro100-mmio", PCI_MEM_SIZE);
     pci_register_bar(&s->dev, 0, PCI_BASE_ADDRESS_MEM_PREFETCH, &s->mmio_bar);
-    memory_region_init_io(&s->io_bar, &eepro100_ops, s, "eepro100-io",
-                          PCI_IO_SIZE);
+    memory_region_init_io(&s->io_bar, OBJECT(s), &eepro100_ops, s,
+                          "eepro100-io", PCI_IO_SIZE);
     pci_register_bar(&s->dev, 1, PCI_BASE_ADDRESS_SPACE_IO, &s->io_bar);
     /* FIXME: flash aliases to mmio?! */
-    memory_region_init_io(&s->flash_bar, &eepro100_ops, s, "eepro100-flash",
-                          PCI_FLASH_SIZE);
+    memory_region_init_io(&s->flash_bar, OBJECT(s), &eepro100_ops, s,
+                          "eepro100-flash", PCI_FLASH_SIZE);
     pci_register_bar(&s->dev, 2, 0, &s->flash_bar);
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
@@ -1905,9 +1901,15 @@ static int e100_nic_init(PCIDevice *pci_dev)
     s->vmstate->name = qemu_get_queue(s->nic)->model;
     vmstate_register(&pci_dev->qdev, -1, s->vmstate, s);
 
-    add_boot_device_path(s->conf.bootindex, &pci_dev->qdev, "/ethernet-phy@0");
-
     return 0;
+}
+
+static void eepro100_instance_init(Object *obj)
+{
+    EEPRO100State *s = DO_UPCAST(EEPRO100State, dev, PCI_DEVICE(obj));
+    device_add_bootindex_property(obj, &s->conf.bootindex,
+                                  "bootindex", "/ethernet-phy@0",
+                                  DEVICE(s), NULL);
 }
 
 static E100PCIDeviceInfo e100_devices[] = {
@@ -2083,6 +2085,7 @@ static void eepro100_class_init(ObjectClass *klass, void *data)
 
     info = eepro100_get_class_by_name(object_class_get_name(klass));
 
+    set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
     dc->props = e100_properties;
     dc->desc = info->desc;
     k->vendor_id = PCI_VENDOR_ID_INTEL;
@@ -2107,7 +2110,8 @@ static void eepro100_register_types(void)
         type_info.parent = TYPE_PCI_DEVICE;
         type_info.class_init = eepro100_class_init;
         type_info.instance_size = sizeof(EEPRO100State);
-        
+        type_info.instance_init = eepro100_instance_init;
+
         type_register(&type_info);
     }
 }

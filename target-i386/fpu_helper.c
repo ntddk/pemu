@@ -19,13 +19,10 @@
 
 #include <math.h>
 #include "cpu.h"
-#include "helper.h"
+#include "exec/helper-proto.h"
 #include "qemu/aes.h"
 #include "qemu/host-utils.h"
-
-#if !defined(CONFIG_USER_ONLY)
-#include "exec/softmmu_exec.h"
-#endif /* !defined(CONFIG_USER_ONLY) */
+#include "exec/cpu_ldst.h"
 
 #define FPU_RC_MASK         0xc00
 #define FPU_RC_NEAR         0x000
@@ -540,7 +537,7 @@ uint32_t helper_fnstcw(CPUX86State *env)
     return env->fpuc;
 }
 
-static void update_fp_status(CPUX86State *env)
+void update_fp_status(CPUX86State *env)
 {
     int rnd_type;
 
@@ -578,8 +575,7 @@ static void update_fp_status(CPUX86State *env)
 
 void helper_fldcw(CPUX86State *env, uint32_t val)
 {
-    env->fpuc = val;
-    update_fp_status(env);
+    cpu_set_fpuc(env, val);
 }
 
 void helper_fclex(CPUX86State *env)
@@ -598,7 +594,7 @@ void helper_fninit(CPUX86State *env)
 {
     env->fpus = 0;
     env->fpstt = 0;
-    env->fpuc = 0x37f;
+    cpu_set_fpuc(env, 0x37f);
     env->fptags[0] = 1;
     env->fptags[1] = 1;
     env->fptags[2] = 1;
@@ -1016,11 +1012,11 @@ void helper_fldenv(CPUX86State *env, target_ulong ptr, int data32)
     int i, fpus, fptag;
 
     if (data32) {
-        env->fpuc = cpu_lduw_data(env, ptr);
+        cpu_set_fpuc(env, cpu_lduw_data(env, ptr));
         fpus = cpu_lduw_data(env, ptr + 4);
         fptag = cpu_lduw_data(env, ptr + 8);
     } else {
-        env->fpuc = cpu_lduw_data(env, ptr);
+        cpu_set_fpuc(env, cpu_lduw_data(env, ptr));
         fpus = cpu_lduw_data(env, ptr + 2);
         fptag = cpu_lduw_data(env, ptr + 4);
     }
@@ -1049,7 +1045,7 @@ void helper_fsave(CPUX86State *env, target_ulong ptr, int data32)
     /* fninit */
     env->fpus = 0;
     env->fpstt = 0;
-    env->fpuc = 0x37f;
+    cpu_set_fpuc(env, 0x37f);
     env->fptags[0] = 1;
     env->fptags[1] = 1;
     env->fptags[2] = 1;
@@ -1160,7 +1156,7 @@ void helper_fxrstor(CPUX86State *env, target_ulong ptr, int data64)
         raise_exception(env, EXCP0D_GPF);
     }
 
-    env->fpuc = cpu_lduw_data(env, ptr);
+    cpu_set_fpuc(env, cpu_lduw_data(env, ptr));
     fpus = cpu_lduw_data(env, ptr + 2);
     fptag = cpu_lduw_data(env, ptr + 4);
     env->fpstt = (fpus >> 11) & 7;
@@ -1179,7 +1175,7 @@ void helper_fxrstor(CPUX86State *env, target_ulong ptr, int data64)
 
     if (env->cr[4] & CR4_OSFXSR_MASK) {
         /* XXX: finish it */
-        env->mxcsr = cpu_ldl_data(env, ptr + 0x18);
+        cpu_set_mxcsr(env, cpu_ldl_data(env, ptr + 0x18));
         /* cpu_ldl_data(env, ptr + 0x1c); */
         if (env->hflags & HF_CS64_MASK) {
             nb_xmm_regs = 16;
@@ -1229,12 +1225,14 @@ floatx80 cpu_set_fp80(uint64_t mant, uint16_t upper)
 #define SSE_RC_CHOP         0x6000
 #define SSE_FZ              0x8000
 
-static void update_sse_status(CPUX86State *env)
+void cpu_set_mxcsr(CPUX86State *env, uint32_t mxcsr)
 {
     int rnd_type;
 
+    env->mxcsr = mxcsr;
+
     /* set rounding mode */
-    switch (env->mxcsr & SSE_RC_MASK) {
+    switch (mxcsr & SSE_RC_MASK) {
     default:
     case SSE_RC_NEAR:
         rnd_type = float_round_nearest_even;
@@ -1252,16 +1250,21 @@ static void update_sse_status(CPUX86State *env)
     set_float_rounding_mode(rnd_type, &env->sse_status);
 
     /* set denormals are zero */
-    set_flush_inputs_to_zero((env->mxcsr & SSE_DAZ) ? 1 : 0, &env->sse_status);
+    set_flush_inputs_to_zero((mxcsr & SSE_DAZ) ? 1 : 0, &env->sse_status);
 
     /* set flush to zero */
-    set_flush_to_zero((env->mxcsr & SSE_FZ) ? 1 : 0, &env->fp_status);
+    set_flush_to_zero((mxcsr & SSE_FZ) ? 1 : 0, &env->fp_status);
+}
+
+void cpu_set_fpuc(CPUX86State *env, uint16_t val)
+{
+    env->fpuc = val;
+    update_fp_status(env);
 }
 
 void helper_ldmxcsr(CPUX86State *env, uint32_t val)
 {
-    env->mxcsr = val;
-    update_sse_status(env);
+    cpu_set_mxcsr(env, val);
 }
 
 void helper_enter_mmx(CPUX86State *env)

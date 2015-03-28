@@ -34,6 +34,7 @@ OBJCOPY		:= $(CROSS_COMPILE)objcopy
 NM		:= $(CROSS_COMPILE)nm
 OBJDUMP		:= $(CROSS_COMPILE)objdump
 OPENSSL		:= openssl
+CSPLIT		:= csplit
 PARSEROM	:= ./util/parserom.pl
 FIXROM		:= ./util/fixrom.pl
 SYMCHECK	:= ./util/symcheck.pl
@@ -45,10 +46,12 @@ ZBIN		:= ./util/zbin
 ELF2EFI32	:= ./util/elf2efi32
 ELF2EFI64	:= ./util/elf2efi64
 EFIROM		:= ./util/efirom
+EFIFATBIN	:= ./util/efifatbin
 ICCFIX		:= ./util/iccfix
 EINFO		:= ./util/einfo
 GENKEYMAP	:= ./util/genkeymap.pl
 DOXYGEN		:= doxygen
+LCAB		:= lcab
 BINUTILS_DIR	:= /usr
 BFD_DIR		:= $(BINUTILS_DIR)
 ZLIB_DIR	:= /usr
@@ -60,7 +63,7 @@ ZLIB_DIR	:= /usr
 SRCDIRS		:=
 SRCDIRS		+= libgcc
 SRCDIRS		+= core
-SRCDIRS		+= net net/tcp net/udp net/infiniband net/80211
+SRCDIRS		+= net net/oncrpc net/tcp net/udp net/infiniband net/80211
 SRCDIRS		+= image
 SRCDIRS		+= drivers/bus
 SRCDIRS		+= drivers/net
@@ -82,6 +85,7 @@ SRCDIRS		+= drivers/bitbash
 SRCDIRS		+= drivers/infiniband
 SRCDIRS		+= interface/pxe interface/efi interface/smbios
 SRCDIRS		+= interface/bofm
+SRCDIRS		+= interface/xen
 SRCDIRS		+= tests
 SRCDIRS		+= crypto crypto/axtls crypto/matrixssl
 SRCDIRS		+= hci hci/commands hci/tui
@@ -94,6 +98,7 @@ SRCDIRS		+= config
 # automatic build system.
 #
 NON_AUTO_SRCS	:=
+NON_AUTO_SRCS	+= core/version.c
 NON_AUTO_SRCS	+= drivers/net/prism2.c
 
 # INCDIRS lists the include path
@@ -107,7 +112,11 @@ INCDIRS		+= include .
 # helpfully suggestive message
 #
 ALL		:= bin/blib.a bin/ipxe.dsk bin/ipxe.lkrn bin/ipxe.iso \
-		   bin/ipxe.usb bin/undionly.kpxe bin/rtl8139.rom
+		   bin/ipxe.usb bin/ipxe.pxe bin/undionly.kpxe bin/rtl8139.rom \
+		   bin/8086100e.mrom bin/80861209.rom bin/10500940.rom \
+		   bin/10222000.rom bin/10ec8139.rom bin/1af41000.rom \
+		   bin/8086100f.mrom bin/808610d3.mrom bin/15ad07b0.rom
+
 all : $(ALL)
 	@$(ECHO) '==========================================================='
 	@$(ECHO)
@@ -139,12 +148,30 @@ all : $(ALL)
 #
 everything :
 	$(Q)$(MAKE) --no-print-directory $(ALL) \
+		bin/3c509.rom bin/intel.rom bin/intel.mrom \
 		bin-i386-efi/ipxe.efi bin-i386-efi/ipxe.efidrv \
 		bin-i386-efi/ipxe.efirom \
 		bin-x86_64-efi/ipxe.efi bin-x86_64-efi/ipxe.efidrv \
 		bin-x86_64-efi/ipxe.efirom \
 		bin-i386-linux/tap.linux bin-x86_64-linux/tap.linux \
 		bin-i386-linux/tests.linux bin-x86_64-linux/tests.linux
+
+###############################################################################
+#
+# VMware build target: all ROMs used with VMware
+#
+vmware : bin/8086100f.mrom bin/808610d3.mrom bin/10222000.rom bin/15ad07b0.rom
+	@$(ECHO) '==========================================================='
+	@$(ECHO) 
+	@$(ECHO) 'Available ROMs:'
+	@$(ECHO) '    bin/8086100f.mrom -- intel/e1000'
+	@$(ECHO) '    bin/808610d3.mrom -- intel/e1000e'
+	@$(ECHO) '    bin/10222000.rom  -- vlance/pcnet32'
+	@$(ECHO) '    bin/15ad07b0.rom  -- vmxnet3'
+	@$(ECHO) 
+	@$(ECHO) 'For more information, see http://ipxe.org/howto/vmware'
+	@$(ECHO)
+	@$(ECHO) '==========================================================='
 
 ###############################################################################
 #
@@ -166,8 +193,8 @@ VERSION_PATCH	= 0
 EXTRAVERSION	= +
 MM_VERSION	= $(VERSION_MAJOR).$(VERSION_MINOR)
 VERSION		= $(MM_VERSION).$(VERSION_PATCH)$(EXTRAVERSION)
+ifneq ($(wildcard ../.git),)
 GITVERSION := $(shell git describe --always --abbrev=1 --match "" 2>/dev/null)
-ifneq ($(GITVERSION),)
 VERSION		+= ($(GITVERSION))
 endif
 version :

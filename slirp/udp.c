@@ -152,7 +152,7 @@ udp_input(register struct mbuf *m, int iphlen)
 	 * Locate pcb for datagram.
 	 */
 	so = slirp->udp_last_so;
-	if (so->so_lport != uh->uh_sport ||
+	if (so == &slirp->udb || so->so_lport != uh->uh_sport ||
 	    so->so_laddr.s_addr != ip->ip_src.s_addr) {
 		struct socket *tmp;
 
@@ -354,7 +354,7 @@ udp_listen(Slirp *slirp, uint32_t haddr, u_int hport, uint32_t laddr,
 {
 	struct sockaddr_in addr;
 	struct socket *so;
-	socklen_t addrlen = sizeof(struct sockaddr_in), opt = 1;
+	socklen_t addrlen = sizeof(struct sockaddr_in);
 
 	so = socreate(slirp);
 	if (!so) {
@@ -372,7 +372,7 @@ udp_listen(Slirp *slirp, uint32_t haddr, u_int hport, uint32_t laddr,
 		udp_detach(so);
 		return NULL;
 	}
-	qemu_setsockopt(so->s, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int));
+	socket_set_fast_reuse(so->s);
 
 	getsockname(so->s,(struct sockaddr *)&addr,&addrlen);
 	so->so_fport = addr.sin_port;

@@ -71,6 +71,7 @@ void go(void)
 	printk("Image returned with return value %#x\n", image_retval);
 }
 
+/* ( path len -- path len ) */
 
 void boot(void)
 {
@@ -99,27 +100,31 @@ void boot(void)
             POP();
             fword("get-package-property");
             POP();
+	    /* Update our local copy of path as well as the one on the stack */
+	    fword("2dup");
             path = pop_fstr_copy();
 	}
 
-	param = strchr(path, ' ');
-	if(param) {
-		*param = '\0';
-		param++;
-	} else if (cmdline_size) {
-            param = (char *)qemu_cmdline;
-        } else {
-            push_str("boot-args");
-            push_str("/options");
-            fword("(find-dev)");
-            POP();
-            fword("get-package-property");
-            POP();
-            param = pop_fstr_copy();
-        }
-	
-	/* Invoke platform-specific Linux loader */
-	linux_load(&sys_info, path, param);
+        if (path) {
+            param = strchr(path, ' ');
+            if(param) {
+                *param = '\0';
+                param++;
+            } else if (cmdline_size) {
+                param = (char *)qemu_cmdline;
+            } else {
+                push_str("boot-args");
+                push_str("/options");
+                fword("(find-dev)");
+                POP();
+                fword("get-package-property");
+                POP();
+                param = pop_fstr_copy();
+            }
 
-	free(path);
+            /* Invoke platform-specific Linux loader */
+            linux_load(&sys_info, path, param);
+
+            free(path);
+        }
 }

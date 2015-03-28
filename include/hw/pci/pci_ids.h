@@ -19,6 +19,7 @@
 #define PCI_CLASS_STORAGE_IDE            0x0101
 #define PCI_CLASS_STORAGE_RAID           0x0104
 #define PCI_CLASS_STORAGE_SATA           0x0106
+#define PCI_CLASS_STORAGE_EXPRESS        0x0108
 #define PCI_CLASS_STORAGE_OTHER          0x0180
 
 #define PCI_CLASS_NETWORK_ETHERNET       0x0200
@@ -38,7 +39,7 @@
 #define PCI_CLASS_BRIDGE_HOST            0x0600
 #define PCI_CLASS_BRIDGE_ISA             0x0601
 #define PCI_CLASS_BRIDGE_PCI             0x0604
-#define PCI_CLASS_BRDIGE_PCI_INF_SUB     0x01
+#define PCI_CLASS_BRIDGE_PCI_INF_SUB     0x01
 #define PCI_CLASS_BRIDGE_OTHER           0x0680
 
 #define PCI_CLASS_COMMUNICATION_SERIAL   0x0700
@@ -52,8 +53,10 @@
 /* Vendors and devices.  Sort key: vendor first, device next. */
 
 #define PCI_VENDOR_ID_LSI_LOGIC          0x1000
+#define PCI_DEVICE_ID_LSI_53C810         0x0001
 #define PCI_DEVICE_ID_LSI_53C895A        0x0012
 #define PCI_DEVICE_ID_LSI_SAS1078        0x0060
+#define PCI_DEVICE_ID_LSI_SAS0079        0x0079
 
 #define PCI_VENDOR_ID_DEC                0x1011
 #define PCI_DEVICE_ID_DEC_21154          0x0026
@@ -142,8 +145,8 @@
 
 #define PCI_DEVICE_ID_INTEL_Q35_MCH      0x29c0
 
-#define PCI_VENDOR_ID_XEN               0x5853
-#define PCI_DEVICE_ID_XEN_PLATFORM      0x0001
+#define PCI_VENDOR_ID_XEN                0x5853
+#define PCI_DEVICE_ID_XEN_PLATFORM       0x0001
 
 #define PCI_VENDOR_ID_NEC                0x1033
 #define PCI_DEVICE_ID_NEC_UPD720200      0x0194

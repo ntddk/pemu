@@ -44,5 +44,3 @@ EFI_STATUS EFIAPI _efidrv_start ( EFI_HANDLE image_handle,
 
 	return 0;
 }
-
-REQUIRE_OBJECT ( efi_snp );

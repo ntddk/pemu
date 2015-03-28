@@ -81,15 +81,15 @@ typedef struct VirtIOSerialPortClass {
     bool is_console;
 
     /*
-     * The per-port (or per-app) init function that's called when a
+     * The per-port (or per-app) realize function that's called when a
      * new device is found on the bus.
      */
-    int (*init)(VirtIOSerialPort *port);
+    DeviceRealize realize;
     /*
-     * Per-port exit function that's called when a port gets
+     * Per-port unrealize function that's called when a port gets
      * hot-unplugged or removed.
      */
-    int (*exit)(VirtIOSerialPort *port);
+    DeviceUnrealize unrealize;
 
     /* Callbacks for guest events */
         /* Guest opened/closed device. */
@@ -201,6 +201,8 @@ struct VirtIOSerial {
     VirtIOSerialBus bus;
 
     QTAILQ_HEAD(, VirtIOSerialPort) ports;
+
+    QLIST_ENTRY(VirtIOSerial) next;
 
     /* bitmap for identifying active ports */
     uint32_t *ports_map;

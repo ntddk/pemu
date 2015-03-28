@@ -22,11 +22,15 @@ FILE_LICENCE ( GPL2_OR_LATER );
 //#define	CONSOLE_SYSLOGS		/* Encrypted syslog console */
 //#define	CONSOLE_VMWARE		/* VMware logfile console */
 //#define	CONSOLE_DEBUGCON	/* Debug port console */
+//#define	CONSOLE_VESAFB		/* VESA framebuffer console */
 
 #define	KEYBOARD_MAP	us
 
 #define	LOG_LEVEL	LOG_NONE
 
+#include <config/named.h>
+#include NAMED_CONFIG(console.h)
 #include <config/local/console.h>
+#include LOCAL_NAMED_CONFIG(console.h)
 
 #endif /* CONFIG_CONSOLE_H */

@@ -215,36 +215,6 @@ typedef struct {
     int fsref;
 } TSC210xRateInfo;
 
-/*  { rate,  dsor,  fsref } */
-static const TSC210xRateInfo tsc2101_rates[] = {
-    /* Fsref / 6.0 */
-    { 7350,	7,	1 },
-    { 8000,	7,	0 },
-    /* Fsref / 5.5 */
-    { 8018,	6,	1 },
-    { 8727,	6,	0 },
-    /* Fsref / 5.0 */
-    { 8820,	5,	1 },
-    { 9600,	5,	0 },
-    /* Fsref / 4.0 */
-    { 11025,	4,	1 },
-    { 12000,	4,	0 },
-    /* Fsref / 3.0 */
-    { 14700,	3,	1 },
-    { 16000,	3,	0 },
-    /* Fsref / 2.0 */
-    { 22050,	2,	1 },
-    { 24000,	2,	0 },
-    /* Fsref / 1.5 */
-    { 29400,	1,	1 },
-    { 32000,	1,	0 },
-    /* Fsref */
-    { 44100,	0,	1 },
-    { 48000,	0,	0 },
-
-    { 0,	0, 	0 },
-};
-
 /*  { rate,   dsor, fsref }	*/
 static const TSC210xRateInfo tsc2102_rates[] = {
     /* Fsref / 6.0 */
@@ -503,9 +473,9 @@ static uint16_t tsc2102_audio_register_read(TSC210xState *s, int reg)
         l_ch = 1;
         r_ch = 1;
         if (s->softstep && !(s->dac_power & (1 << 10))) {
-            l_ch = (qemu_get_clock_ns(vm_clock) >
+            l_ch = (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >
                             s->volume_change + TSC_SOFTSTEP_DELAY);
-            r_ch = (qemu_get_clock_ns(vm_clock) >
+            r_ch = (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >
                             s->volume_change + TSC_SOFTSTEP_DELAY);
         }
 
@@ -514,7 +484,7 @@ static uint16_t tsc2102_audio_register_read(TSC210xState *s, int reg)
     case 0x05:	/* Stereo DAC Power Control */
         return 0x2aa0 | s->dac_power |
                 (((s->dac_power & (1 << 10)) &&
-                  (qemu_get_clock_ns(vm_clock) >
+                  (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >
                    s->powerdown + TSC_POWEROFF_DELAY)) << 6);
 
     case 0x06:	/* Audio Control 3 */
@@ -594,7 +564,7 @@ static void tsc2102_control_register_write(
         s->host_mode = value >> 15;
         s->enabled = !(value & 0x4000);
         if (s->busy && !s->enabled)
-            qemu_del_timer(s->timer);
+            timer_del(s->timer);
         s->busy &= s->enabled;
         s->nextfunction = (value >> 10) & 0xf;
         s->nextprecision = (value >> 8) & 3;
@@ -629,7 +599,7 @@ static void tsc2102_control_register_write(
     case 0x04:	/* Reset */
         if (value == 0xbb00) {
             if (s->busy)
-                qemu_del_timer(s->timer);
+                timer_del(s->timer);
             tsc210x_reset(s);
 #ifdef TSC_VERBOSE
         } else {
@@ -695,7 +665,7 @@ static void tsc2102_audio_register_write(
 
     case 0x02:	/* DAC Volume Control */
         s->volume = value;
-        s->volume_change = qemu_get_clock_ns(vm_clock);
+        s->volume_change = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         return;
 
     case 0x03:
@@ -717,7 +687,7 @@ static void tsc2102_audio_register_write(
 
     case 0x05:	/* Stereo DAC Power Control */
         if ((value & ~s->dac_power) & (1 << 10))
-            s->powerdown = qemu_get_clock_ns(vm_clock);
+            s->powerdown = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
         s->dac_power = value & 0x9543;
 #ifdef TSC_VERBOSE
@@ -864,8 +834,8 @@ static void tsc210x_pin_update(TSC210xState *s)
     s->busy = 1;
     s->precision = s->nextprecision;
     s->function = s->nextfunction;
-    expires = qemu_get_clock_ns(vm_clock) + (get_ticks_per_sec() >> 10);
-    qemu_mod_timer(s->timer, expires);
+    expires = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + (get_ticks_per_sec() >> 10);
+    timer_mod(s->timer, expires);
 }
 
 static uint16_t tsc210x_read(TSC210xState *s)
@@ -1005,7 +975,7 @@ static void tsc210x_i2s_set_rate(TSC210xState *s, int in, int out)
 static void tsc210x_save(QEMUFile *f, void *opaque)
 {
     TSC210xState *s = (TSC210xState *) opaque;
-    int64_t now = qemu_get_clock_ns(vm_clock);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     int i;
 
     qemu_put_be16(f, s->x);
@@ -1020,7 +990,7 @@ static void tsc210x_save(QEMUFile *f, void *opaque)
     qemu_put_byte(f, s->irq);
     qemu_put_be16s(f, &s->dav);
 
-    qemu_put_timer(f, s->timer);
+    timer_put(f, s->timer);
     qemu_put_byte(f, s->enabled);
     qemu_put_byte(f, s->host_mode);
     qemu_put_byte(f, s->function);
@@ -1051,7 +1021,7 @@ static void tsc210x_save(QEMUFile *f, void *opaque)
 static int tsc210x_load(QEMUFile *f, void *opaque, int version_id)
 {
     TSC210xState *s = (TSC210xState *) opaque;
-    int64_t now = qemu_get_clock_ns(vm_clock);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     int i;
 
     s->x = qemu_get_be16(f);
@@ -1066,13 +1036,25 @@ static int tsc210x_load(QEMUFile *f, void *opaque, int version_id)
     s->irq = qemu_get_byte(f);
     qemu_get_be16s(f, &s->dav);
 
-    qemu_get_timer(f, s->timer);
+    timer_get(f, s->timer);
     s->enabled = qemu_get_byte(f);
     s->host_mode = qemu_get_byte(f);
     s->function = qemu_get_byte(f);
+    if (s->function < 0 || s->function >= ARRAY_SIZE(mode_regs)) {
+        return -EINVAL;
+    }
     s->nextfunction = qemu_get_byte(f);
+    if (s->nextfunction < 0 || s->nextfunction >= ARRAY_SIZE(mode_regs)) {
+        return -EINVAL;
+    }
     s->precision = qemu_get_byte(f);
+    if (s->precision < 0 || s->precision >= ARRAY_SIZE(resolution)) {
+        return -EINVAL;
+    }
     s->nextprecision = qemu_get_byte(f);
+    if (s->nextprecision < 0 || s->nextprecision >= ARRAY_SIZE(resolution)) {
+        return -EINVAL;
+    }
     s->filter = qemu_get_byte(f);
     s->pin_func = qemu_get_byte(f);
     s->ref = qemu_get_byte(f);
@@ -1093,7 +1075,7 @@ static int tsc210x_load(QEMUFile *f, void *opaque, int version_id)
     for (i = 0; i < 0x14; i ++)
         qemu_get_be16s(f, &s->filter_data[i]);
 
-    s->busy = qemu_timer_pending(s->timer);
+    s->busy = timer_pending(s->timer);
     qemu_set_irq(s->pint, !s->irq);
     qemu_set_irq(s->davint, !s->dav);
 
@@ -1111,7 +1093,7 @@ uWireSlave *tsc2102_init(qemu_irq pint)
     s->y = 160;
     s->pressure = 0;
     s->precision = s->nextprecision = 0;
-    s->timer = qemu_new_timer_ns(vm_clock, tsc210x_timer_tick, s);
+    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tsc210x_timer_tick, s);
     s->pint = pint;
     s->model = 0x2102;
     s->name = "tsc2102";
@@ -1160,7 +1142,7 @@ uWireSlave *tsc2301_init(qemu_irq penirq, qemu_irq kbirq, qemu_irq dav)
     s->y = 240;
     s->pressure = 0;
     s->precision = s->nextprecision = 0;
-    s->timer = qemu_new_timer_ns(vm_clock, tsc210x_timer_tick, s);
+    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tsc210x_timer_tick, s);
     s->pint = penirq;
     s->kbint = kbirq;
     s->davint = dav;

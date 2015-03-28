@@ -282,7 +282,8 @@ void xen_pt_msi_disable(XenPCIPassthroughState *s)
                      msi->initialized);
 
     /* clear msi info */
-    msi->flags = 0;
+    msi->flags &= ~PCI_MSI_FLAGS_ENABLE;
+    msi->initialized = false;
     msi->mapped = false;
     msi->pirq = XEN_PT_UNASSIGNED_PIRQ;
 }
@@ -446,7 +447,8 @@ static void pci_msix_write(void *opaque, hwaddr addr,
     if (offset != PCI_MSIX_ENTRY_VECTOR_CTRL) {
         const volatile uint32_t *vec_ctrl;
 
-        if (get_entry_value(entry, offset) == val) {
+        if (get_entry_value(entry, offset) == val
+            && entry->pirq != XEN_PT_UNASSIGNED_PIRQ) {
             return;
         }
 
@@ -544,7 +546,8 @@ int xen_pt_msix_init(XenPCIPassthroughState *s, uint32_t base)
         msix->msix_entry[i].pirq = XEN_PT_UNASSIGNED_PIRQ;
     }
 
-    memory_region_init_io(&msix->mmio, &pci_msix_ops, s, "xen-pci-pt-msix",
+    memory_region_init_io(&msix->mmio, OBJECT(s), &pci_msix_ops,
+                          s, "xen-pci-pt-msix",
                           (total_entries * PCI_MSIX_ENTRY_SIZE
                            + XC_PAGE_SIZE - 1)
                           & XC_PAGE_MASK);
@@ -590,7 +593,6 @@ int xen_pt_msix_init(XenPCIPassthroughState *s, uint32_t base)
     return 0;
 
 error_out:
-    memory_region_destroy(&msix->mmio);
     g_free(s->msix);
     s->msix = NULL;
     return rc;
@@ -613,7 +615,6 @@ void xen_pt_msix_delete(XenPCIPassthroughState *s)
     }
 
     memory_region_del_subregion(&s->bar[msix->bar_index], &msix->mmio);
-    memory_region_destroy(&msix->mmio);
 
     g_free(s->msix);
     s->msix = NULL;

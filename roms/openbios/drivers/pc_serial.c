@@ -40,10 +40,10 @@ char uart_getchar(int port)
 	return ((char) inb(RBR(port)) & 0177);
 }
 
-static void uart_putchar(int port, unsigned char c)
+static void uart_port_putchar(int port, unsigned char c)
 {
 	if (c == '\n')
-		uart_putchar(port, '\r');
+		uart_port_putchar(port, '\r');
 	while (!(inb(LSR(port)) & 0x20));
 	outb(c, THR(port));
 }
@@ -91,9 +91,9 @@ int uart_init(int port, unsigned long speed)
 	return -1;
 }
 
-void serial_putchar(int c)
+void uart_putchar(int c)
 {
-	uart_putchar(CONFIG_SERIAL_PORT, (unsigned char) (c & 0xff));
+	uart_port_putchar(CONFIG_SERIAL_PORT, (unsigned char) (c & 0xff));
 }
 #endif
 
@@ -129,7 +129,7 @@ pc_serial_write(unsigned long *address)
     addr = (unsigned char *)POP();
 
      for (i = 0; i < len; i++) {
-        uart_putchar(*address, addr[i]);
+        uart_port_putchar(*address, addr[i]);
     }
     PUSH(len);
 }
@@ -142,22 +142,19 @@ pc_serial_close(void)
 static void
 pc_serial_open(unsigned long *address)
 {
-    int len;
-    phandle_t ph;
-    unsigned long *prop;
-
-    fword("my-self");
-    fword("ihandle>phandle");
-    ph = (phandle_t)POP();
-    prop = (unsigned long *)get_property(ph, "address", &len);
-    *address = *prop;
-
     RET ( -1 );
+}
+
+static void
+pc_serial_init(unsigned long *address)
+{
+    *address = POP();
 }
 
 DECLARE_UNNAMED_NODE(pc_serial, INSTALL_OPEN, sizeof(unsigned long));
 
 NODE_METHODS(pc_serial) = {
+    { "init",               pc_serial_init              },
     { "open",               pc_serial_open              },
     { "close",              pc_serial_close             },
     { "read",               pc_serial_read              },
@@ -177,6 +174,10 @@ ob_pc_serial_init(const char *path, const char *dev_name, uint64_t base,
     push_str(nodebuff);
     fword("find-device");
 
+    PUSH(offset);
+    PUSH(find_package_method("init", get_cur_dev()));
+    fword("execute");
+
     push_str("serial");
     fword("device-type");
 
@@ -190,6 +191,14 @@ ob_pc_serial_init(const char *path, const char *dev_name, uint64_t base,
     fword("encode+");
     push_str("reg");
     fword("property");
+    
+#if !defined(CONFIG_SPARC64)
+    PUSH(offset);
+    fword("encode-int");
+    push_str("address");
+    fword("property");
+#endif
+    
 #if defined(CONFIG_SPARC64)
     set_int_property(get_cur_dev(), "interrupts", 1);
 #endif

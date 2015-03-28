@@ -651,18 +651,26 @@ sub get_maintainers {
 	$email->[0] = deduplicate_email($email->[0]);
     }
 
-    foreach my $file (@files) {
-	if ($email &&
-	    ($email_git || ($email_git_fallback &&
-			    !$exact_pattern_match_hash{$file}))) {
-	    vcs_file_signoffs($file);
-	}
-	if ($email && $email_git_blame) {
-	    vcs_file_blame($file);
-	}
-    }
-
     if ($email) {
+	if (! $interactive) {
+	    $email_git_fallback = 0 if @email_to > 0 || @list_to > 0 || $email_git || $email_git_blame;
+	    if ($email_git_fallback) {
+	        print STDERR "get_maintainer.pl: No maintainers found, printing recent contributors.\n";
+	        print STDERR "get_maintainer.pl: Do not blindly cc: them on patches!  Use common sense.\n";
+	        print STDERR "\n";
+            }
+        }
+
+	foreach my $file (@files) {
+	    if ($email_git || ($email_git_fallback &&
+			       !$exact_pattern_match_hash{$file})) {
+	        vcs_file_signoffs($file);
+	    }
+	    if ($email_git_blame) {
+	        vcs_file_blame($file);
+	    }
+	}
+
 	foreach my $chief (@penguin_chief) {
 	    if ($chief =~ m/^(.*):(.*)/) {
 		my $email_address;
@@ -1385,7 +1393,7 @@ sub vcs_exists {
 	warn("$P: No supported VCS found.  Add --nogit to options?\n");
 	warn("Using a git repository produces better results.\n");
 	warn("Try latest git repository using:\n");
-	warn("git clone git://git.qemu.org/qemu.git\n");
+	warn("git clone git://git.qemu-project.org/qemu.git\n");
 	$printed_novcs = 1;
     }
     return 0;

@@ -79,6 +79,8 @@ crosscflags()
          -o "$target" = "alpha"; then
         if test "$host" = "x86"; then
             cflags="$cflags -DNEED_FAKE_INT128_T"
+        elif test "$host" = "arm"; then
+            cflags="$cflags -DNEED_FAKE_INT128_T"
         elif test "$host" = "ppc" -a `uname -s` = "Darwin"; then
             cflags="$cflags -DNEED_FAKE_INT128_T"
         fi
@@ -117,6 +119,11 @@ config_set_boolean()
     echo "<option name=\"$option\" type=\"boolean\" value=\"true\" />"
 }
 
+exists()
+{
+    type "$1" >/dev/null 2>&1
+}
+
 
 SRCDIR=`dirname "$0"`/../..
 BUILDDIR=`pwd`
@@ -131,6 +138,13 @@ fi
 VERSION=`head $SRCDIR/VERSION`
 
 echo "Configuring OpenBIOS on $HOSTARCH for $*"
+
+if exists toke; then
+    :
+else
+    echo "Unable to locate toke executable from the fcode-utils package - aborting"
+    exit 1
+fi
 
 target_list=""
 for target in $*; do
@@ -197,6 +211,10 @@ for ARCH in $arch_list; do
             ;;
             xbox-x86)
             xbox="yes"
+            ;;
+            builtin-sparc32)
+            builtin="yes"
+            qemu="yes"
             ;;
             builtin-sparc64)
             builtin="yes"

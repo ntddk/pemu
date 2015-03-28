@@ -242,6 +242,10 @@ static void fill_prefetch_fifo(struct omap_gpmc_s *s)
     if (bytes > s->prefetch.count) {
         bytes = s->prefetch.count;
     }
+    if (is16bit) {
+        bytes &= ~1;
+    }
+
     s->prefetch.count -= bytes;
     s->prefetch.fifopointer += bytes;
     fptr = 64 - s->prefetch.fifopointer;
@@ -413,7 +417,7 @@ static void omap_gpmc_cs_map(struct omap_gpmc_s *s, int cs)
      * constant), the mask should cause wrapping of the address space, so
      * that the same memory becomes accessible at every <i>size</i> bytes
      * starting from <i>base</i>.  */
-    memory_region_init(&f->container, "omap-gpmc-file", size);
+    memory_region_init(&f->container, NULL, "omap-gpmc-file", size);
     memory_region_add_subregion(&f->container, 0,
                                 omap_gpmc_cs_memregion(s, cs));
     memory_region_add_subregion(get_system_memory(), base,
@@ -432,7 +436,7 @@ static void omap_gpmc_cs_unmap(struct omap_gpmc_s *s, int cs)
     }
     memory_region_del_subregion(get_system_memory(), &f->container);
     memory_region_del_subregion(&f->container, omap_gpmc_cs_memregion(s, cs));
-    memory_region_destroy(&f->container);
+    object_unparent(OBJECT(&f->container));
 }
 
 void omap_gpmc_reset(struct omap_gpmc_s *s)
@@ -462,8 +466,6 @@ void omap_gpmc_reset(struct omap_gpmc_s *s)
         s->cs_file[i].config[3] = 0x10031003;
         s->cs_file[i].config[4] = 0x10f1111;
         s->cs_file[i].config[5] = 0;
-        s->cs_file[i].config[6] = 0xf00 | (i ? 0 : 1 << 6);
-
         s->cs_file[i].config[6] = 0xf00;
         /* In theory we could probe attached devices for some CFG1
          * bits here, but we just retain them across resets as they
@@ -826,7 +828,7 @@ struct omap_gpmc_s *omap_gpmc_init(struct omap_mpu_state_s *mpu,
     struct omap_gpmc_s *s = (struct omap_gpmc_s *)
             g_malloc0(sizeof(struct omap_gpmc_s));
 
-    memory_region_init_io(&s->iomem, &omap_gpmc_ops, s, "omap-gpmc", 0x1000);
+    memory_region_init_io(&s->iomem, NULL, &omap_gpmc_ops, s, "omap-gpmc", 0x1000);
     memory_region_add_subregion(get_system_memory(), base, &s->iomem);
 
     s->irq = irq;
@@ -843,14 +845,14 @@ struct omap_gpmc_s *omap_gpmc_init(struct omap_mpu_state_s *mpu,
      * guest-requested size.
      */
     for (cs = 0; cs < 8; cs++) {
-        memory_region_init_io(&s->cs_file[cs].nandiomem,
+        memory_region_init_io(&s->cs_file[cs].nandiomem, NULL,
                               &omap_nand_ops,
                               &s->cs_file[cs],
                               "omap-nand",
                               256 * 1024 * 1024);
     }
 
-    memory_region_init_io(&s->prefetch.iomem, &omap_prefetch_ops, s,
+    memory_region_init_io(&s->prefetch.iomem, NULL, &omap_prefetch_ops, s,
                           "omap-gpmc-prefetch", 256 * 1024 * 1024);
     return s;
 }

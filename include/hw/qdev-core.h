@@ -4,9 +4,11 @@
 #include "qemu/queue.h"
 #include "qemu/option.h"
 #include "qemu/typedefs.h"
+#include "qemu/bitmap.h"
 #include "qom/object.h"
 #include "hw/irq.h"
 #include "qapi/error.h"
+#include "hw/hotplug.h"
 
 enum {
     DEV_NVECTORS_UNSPECIFIED = -1,
@@ -17,11 +19,25 @@ enum {
 #define DEVICE_CLASS(klass) OBJECT_CLASS_CHECK(DeviceClass, (klass), TYPE_DEVICE)
 #define DEVICE_GET_CLASS(obj) OBJECT_GET_CLASS(DeviceClass, (obj), TYPE_DEVICE)
 
+typedef enum DeviceCategory {
+    DEVICE_CATEGORY_BRIDGE,
+    DEVICE_CATEGORY_USB,
+    DEVICE_CATEGORY_STORAGE,
+    DEVICE_CATEGORY_NETWORK,
+    DEVICE_CATEGORY_INPUT,
+    DEVICE_CATEGORY_DISPLAY,
+    DEVICE_CATEGORY_SOUND,
+    DEVICE_CATEGORY_MISC,
+    DEVICE_CATEGORY_MAX
+} DeviceCategory;
+
 typedef int (*qdev_initfn)(DeviceState *dev);
 typedef int (*qdev_event)(DeviceState *dev);
 typedef void (*qdev_resetfn)(DeviceState *dev);
 typedef void (*DeviceRealize)(DeviceState *dev, Error **errp);
 typedef void (*DeviceUnrealize)(DeviceState *dev, Error **errp);
+typedef void (*BusRealize)(BusState *bus, Error **errp);
+typedef void (*BusUnrealize)(BusState *bus, Error **errp);
 
 struct VMStateDescription;
 
@@ -36,6 +52,8 @@ struct VMStateDescription;
  * is changed to %true. Deprecated, new types inheriting directly from
  * TYPE_DEVICE should use @realize instead, new leaf types should consult
  * their respective parent type.
+ * @hotpluggable: indicates if #DeviceClass is hotpluggable, available
+ * as readonly "hotpluggable" property of #DeviceState instance
  *
  * # Realization #
  * Devices are constructed in two stages,
@@ -80,10 +98,23 @@ typedef struct DeviceClass {
     ObjectClass parent_class;
     /*< public >*/
 
+    DECLARE_BITMAP(categories, DEVICE_CATEGORY_MAX);
     const char *fw_name;
     const char *desc;
     Property *props;
-    int no_user;
+
+    /*
+     * Shall we hide this device model from -device / device_add?
+     * All devices should support instantiation with device_add, and
+     * this flag should not exist.  But we're not there, yet.  Some
+     * devices fail to instantiate with cryptic error messages.
+     * Others instantiate, but don't work.  Exposing users to such
+     * behavior would be cruel; this flag serves to protect them.  It
+     * should never be set without a comment explaining why it is set.
+     * TODO remove once we're there
+     */
+    bool cannot_instantiate_with_device_add_yet;
+    bool hotpluggable;
 
     /* callbacks */
     void (*reset)(DeviceState *dev);
@@ -95,10 +126,19 @@ typedef struct DeviceClass {
 
     /* Private to qdev / bus.  */
     qdev_initfn init; /* TODO remove, once users are converted to realize */
-    qdev_event unplug;
     qdev_event exit; /* TODO remove, once users are converted to unrealize */
     const char *bus_type;
 } DeviceClass;
+
+typedef struct NamedGPIOList NamedGPIOList;
+
+struct NamedGPIOList {
+    char *name;
+    qemu_irq *in;
+    int num_in;
+    int num_out;
+    QLIST_ENTRY(NamedGPIOList) node;
+};
 
 /**
  * DeviceState:
@@ -114,13 +154,11 @@ struct DeviceState {
 
     const char *id;
     bool realized;
+    bool pending_deleted_event;
     QemuOpts *opts;
     int hotplugged;
     BusState *parent_bus;
-    int num_gpio_out;
-    qemu_irq *gpio_out;
-    int num_gpio_in;
-    qemu_irq *gpio_in;
+    QLIST_HEAD(, NamedGPIOList) gpios;
     QLIST_HEAD(, BusState) child_bus;
     int num_child_bus;
     int instance_id_alias;
@@ -144,9 +182,14 @@ struct BusClass {
      * bindings can be found at http://playground.sun.com/1275/bindings/.
      */
     char *(*get_fw_dev_path)(DeviceState *dev);
-    int (*reset)(BusState *bus);
+    void (*reset)(BusState *bus);
+    BusRealize realize;
+    BusUnrealize unrealize;
+
     /* maximum devices allowed on the bus, 0: no limit. */
     int max_dev;
+    /* number of automatically allocated bus ids (e.g. ide.0) */
+    int automatic_ids;
 };
 
 typedef struct BusChild {
@@ -155,15 +198,19 @@ typedef struct BusChild {
     QTAILQ_ENTRY(BusChild) sibling;
 } BusChild;
 
+#define QDEV_HOTPLUG_HANDLER_PROPERTY "hotplug-handler"
+
 /**
  * BusState:
+ * @hotplug_device: link to a hotplug device associated with bus.
  */
 struct BusState {
     Object obj;
     DeviceState *parent;
     const char *name;
-    int allow_hotplug;
+    HotplugHandler *hotplug_handler;
     int max_index;
+    bool realized;
     QTAILQ_HEAD(ChildrenHead, BusChild) children;
     QLIST_ENTRY(BusState) sibling;
 };
@@ -182,19 +229,26 @@ struct Property {
 
 struct PropertyInfo {
     const char *name;
-    const char *legacy_name;
+    const char *description;
     const char **enum_table;
-    int (*parse)(DeviceState *dev, Property *prop, const char *str);
     int (*print)(DeviceState *dev, Property *prop, char *dest, size_t len);
     ObjectPropertyAccessor *get;
     ObjectPropertyAccessor *set;
     ObjectPropertyRelease *release;
 };
 
+/**
+ * GlobalProperty:
+ * @user_provided: Set to true if property comes from user-provided config
+ * (command-line or config file).
+ * @used: Set to true if property was used when initializing a device.
+ */
 typedef struct GlobalProperty {
     const char *driver;
     const char *property;
     const char *value;
+    bool user_provided;
+    bool used;
     QTAILQ_ENTRY(GlobalProperty) next;
 } GlobalProperty;
 
@@ -207,13 +261,20 @@ void qdev_init_nofail(DeviceState *dev);
 void qdev_set_legacy_instance_id(DeviceState *dev, int alias_id,
                                  int required_for_version);
 void qdev_unplug(DeviceState *dev, Error **errp);
-void qdev_free(DeviceState *dev);
-int qdev_simple_unplug_cb(DeviceState *dev);
+void qdev_simple_device_unplug_cb(HotplugHandler *hotplug_dev,
+                                  DeviceState *dev, Error **errp);
 void qdev_machine_creation_done(void);
 bool qdev_machine_modified(void);
 
 qemu_irq qdev_get_gpio_in(DeviceState *dev, int n);
+qemu_irq qdev_get_gpio_in_named(DeviceState *dev, const char *name, int n);
+
 void qdev_connect_gpio_out(DeviceState *dev, int n, qemu_irq pin);
+void qdev_connect_gpio_out_named(DeviceState *dev, const char *name, int n,
+                                 qemu_irq pin);
+qemu_irq qdev_get_gpio_out_connector(DeviceState *dev, const char *name, int n);
+qemu_irq qdev_intercept_gpio_out(DeviceState *dev, qemu_irq icpt,
+                                 const char *name, int n);
 
 BusState *qdev_get_child_bus(DeviceState *dev, const char *name);
 
@@ -223,6 +284,13 @@ BusState *qdev_get_child_bus(DeviceState *dev, const char *name);
 /* GPIO inputs also double as IRQ sinks.  */
 void qdev_init_gpio_in(DeviceState *dev, qemu_irq_handler handler, int n);
 void qdev_init_gpio_out(DeviceState *dev, qemu_irq *pins, int n);
+void qdev_init_gpio_in_named(DeviceState *dev, qemu_irq_handler handler,
+                             const char *name, int n);
+void qdev_init_gpio_out_named(DeviceState *dev, qemu_irq *pins,
+                              const char *name, int n);
+
+void qdev_pass_gpios(DeviceState *dev, DeviceState *container,
+                     const char *name);
 
 BusState *qdev_get_parent_bus(DeviceState *dev);
 
@@ -234,16 +302,21 @@ DeviceState *qdev_find_recursive(BusState *bus, const char *id);
 typedef int (qbus_walkerfn)(BusState *bus, void *opaque);
 typedef int (qdev_walkerfn)(DeviceState *dev, void *opaque);
 
-void qbus_create_inplace(void *bus, const char *typename,
+void qbus_create_inplace(void *bus, size_t size, const char *typename,
                          DeviceState *parent, const char *name);
 BusState *qbus_create(const char *typename, DeviceState *parent, const char *name);
 /* Returns > 0 if either devfn or busfn skip walk somewhere in cursion,
  *         < 0 if either devfn or busfn terminate walk somewhere in cursion,
  *           0 otherwise. */
-int qbus_walk_children(BusState *bus, qdev_walkerfn *devfn,
-                       qbus_walkerfn *busfn, void *opaque);
-int qdev_walk_children(DeviceState *dev, qdev_walkerfn *devfn,
-                       qbus_walkerfn *busfn, void *opaque);
+int qbus_walk_children(BusState *bus,
+                       qdev_walkerfn *pre_devfn, qbus_walkerfn *pre_busfn,
+                       qdev_walkerfn *post_devfn, qbus_walkerfn *post_busfn,
+                       void *opaque);
+int qdev_walk_children(DeviceState *dev,
+                       qdev_walkerfn *pre_devfn, qbus_walkerfn *pre_busfn,
+                       qdev_walkerfn *post_devfn, qbus_walkerfn *post_busfn,
+                       void *opaque);
+
 void qdev_reset_all(DeviceState *dev);
 
 /**
@@ -258,10 +331,6 @@ void qdev_reset_all(DeviceState *dev);
  */
 void qbus_reset_all(BusState *bus);
 void qbus_reset_all_fn(void *opaque);
-
-void qbus_free(BusState *bus);
-
-#define FROM_QBUS(type, dev) DO_UPCAST(type, qbus, dev)
 
 /* This should go away once we get rid of the NULL bus hack */
 BusState *sysbus_get_default(void);
@@ -296,4 +365,15 @@ extern int qdev_hotplug;
 
 char *qdev_get_dev_path(DeviceState *dev);
 
+GSList *qdev_build_hotpluggable_device_list(Object *peripheral);
+
+void qbus_set_hotplug_handler(BusState *bus, DeviceState *handler,
+                              Error **errp);
+
+void qbus_set_bus_hotplug_handler(BusState *bus, Error **errp);
+
+static inline bool qbus_is_hotpluggable(BusState *bus)
+{
+   return bus->hotplug_handler;
+}
 #endif

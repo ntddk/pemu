@@ -24,6 +24,7 @@
 
 #include <libfdt.h>
 
+#include "sysemu/block-backend.h"
 #include "sysemu/device_tree.h"
 #include "hw/sysbus.h"
 #include "hw/ppc/spapr.h"
@@ -33,7 +34,7 @@ typedef struct sPAPRNVRAM {
     VIOsPAPRDevice sdev;
     uint32_t size;
     uint8_t *buf;
-    BlockDriverState *drive;
+    BlockBackend *blk;
 } sPAPRNVRAM;
 
 #define TYPE_VIO_SPAPR_NVRAM "spapr-nvram"
@@ -42,25 +43,24 @@ typedef struct sPAPRNVRAM {
 
 #define MIN_NVRAM_SIZE 8192
 #define DEFAULT_NVRAM_SIZE 65536
-#define MAX_NVRAM_SIZE (UINT16_MAX * 16)
+#define MAX_NVRAM_SIZE 1048576
 
-static void rtas_nvram_fetch(sPAPREnvironment *spapr,
+static void rtas_nvram_fetch(PowerPCCPU *cpu, sPAPREnvironment *spapr,
                              uint32_t token, uint32_t nargs,
                              target_ulong args,
                              uint32_t nret, target_ulong rets)
 {
     sPAPRNVRAM *nvram = spapr->nvram;
     hwaddr offset, buffer, len;
-    int alen;
     void *membuf;
 
     if ((nargs != 3) || (nret != 2)) {
-        rtas_st(rets, 0, -3);
+        rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
         return;
     }
 
     if (!nvram) {
-        rtas_st(rets, 0, -1);
+        rtas_st(rets, 0, RTAS_OUT_HW_ERROR);
         rtas_st(rets, 1, 0);
         return;
     }
@@ -71,27 +71,22 @@ static void rtas_nvram_fetch(sPAPREnvironment *spapr,
 
     if (((offset + len) < offset)
         || ((offset + len) > nvram->size)) {
-        rtas_st(rets, 0, -3);
+        rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
         rtas_st(rets, 1, 0);
         return;
     }
+
+    assert(nvram->buf);
 
     membuf = cpu_physical_memory_map(buffer, &len, 1);
-    if (nvram->drive) {
-        alen = bdrv_pread(nvram->drive, offset, membuf, len);
-    } else {
-        assert(nvram->buf);
-
-        memcpy(membuf, nvram->buf + offset, len);
-        alen = len;
-    }
+    memcpy(membuf, nvram->buf + offset, len);
     cpu_physical_memory_unmap(membuf, len, 1, len);
 
-    rtas_st(rets, 0, (alen < len) ? -1 : 0);
-    rtas_st(rets, 1, (alen < 0) ? 0 : alen);
+    rtas_st(rets, 0, RTAS_OUT_SUCCESS);
+    rtas_st(rets, 1, len);
 }
 
-static void rtas_nvram_store(sPAPREnvironment *spapr,
+static void rtas_nvram_store(PowerPCCPU *cpu, sPAPREnvironment *spapr,
                              uint32_t token, uint32_t nargs,
                              target_ulong args,
                              uint32_t nret, target_ulong rets)
@@ -102,12 +97,12 @@ static void rtas_nvram_store(sPAPREnvironment *spapr,
     void *membuf;
 
     if ((nargs != 3) || (nret != 2)) {
-        rtas_st(rets, 0, -3);
+        rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
         return;
     }
 
     if (!nvram) {
-        rtas_st(rets, 0, -1);
+        rtas_st(rets, 0, RTAS_OUT_HW_ERROR);
         return;
     }
 
@@ -117,22 +112,23 @@ static void rtas_nvram_store(sPAPREnvironment *spapr,
 
     if (((offset + len) < offset)
         || ((offset + len) > nvram->size)) {
-        rtas_st(rets, 0, -3);
+        rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
         return;
     }
 
     membuf = cpu_physical_memory_map(buffer, &len, 0);
-    if (nvram->drive) {
-        alen = bdrv_pwrite(nvram->drive, offset, membuf, len);
-    } else {
-        assert(nvram->buf);
 
-        memcpy(nvram->buf + offset, membuf, len);
-        alen = len;
+    alen = len;
+    if (nvram->blk) {
+        alen = blk_pwrite(nvram->blk, offset, membuf, len);
     }
+
+    assert(nvram->buf);
+    memcpy(nvram->buf + offset, membuf, len);
+
     cpu_physical_memory_unmap(membuf, len, 0, len);
 
-    rtas_st(rets, 0, (alen < len) ? -1 : 0);
+    rtas_st(rets, 0, (alen < len) ? RTAS_OUT_HW_ERROR : RTAS_OUT_SUCCESS);
     rtas_st(rets, 1, (alen < 0) ? 0 : alen);
 }
 
@@ -140,12 +136,13 @@ static int spapr_nvram_init(VIOsPAPRDevice *dev)
 {
     sPAPRNVRAM *nvram = VIO_SPAPR_NVRAM(dev);
 
-    if (nvram->drive) {
-        nvram->size = bdrv_getlength(nvram->drive);
+    if (nvram->blk) {
+        nvram->size = blk_getlength(nvram->blk);
     } else {
         nvram->size = DEFAULT_NVRAM_SIZE;
-        nvram->buf = g_malloc0(nvram->size);
     }
+
+    nvram->buf = g_malloc0(nvram->size);
 
     if ((nvram->size < MIN_NVRAM_SIZE) || (nvram->size > MAX_NVRAM_SIZE)) {
         fprintf(stderr, "spapr-nvram must be between %d and %d bytes in size\n",
@@ -153,8 +150,16 @@ static int spapr_nvram_init(VIOsPAPRDevice *dev)
         return -1;
     }
 
-    spapr_rtas_register("nvram-fetch", rtas_nvram_fetch);
-    spapr_rtas_register("nvram-store", rtas_nvram_store);
+    if (nvram->blk) {
+        int alen = blk_pread(nvram->blk, 0, nvram->buf, nvram->size);
+
+        if (alen != nvram->size) {
+            return -1;
+        }
+    }
+
+    spapr_rtas_register(RTAS_NVRAM_FETCH, "nvram-fetch", rtas_nvram_fetch);
+    spapr_rtas_register(RTAS_NVRAM_STORE, "nvram-store", rtas_nvram_store);
 
     return 0;
 }
@@ -166,9 +171,51 @@ static int spapr_nvram_devnode(VIOsPAPRDevice *dev, void *fdt, int node_off)
     return fdt_setprop_cell(fdt, node_off, "#bytes", nvram->size);
 }
 
+static int spapr_nvram_pre_load(void *opaque)
+{
+    sPAPRNVRAM *nvram = VIO_SPAPR_NVRAM(opaque);
+
+    g_free(nvram->buf);
+    nvram->buf = NULL;
+    nvram->size = 0;
+
+    return 0;
+}
+
+static int spapr_nvram_post_load(void *opaque, int version_id)
+{
+    sPAPRNVRAM *nvram = VIO_SPAPR_NVRAM(opaque);
+
+    if (nvram->blk) {
+        int alen = blk_pwrite(nvram->blk, 0, nvram->buf, nvram->size);
+
+        if (alen < 0) {
+            return alen;
+        }
+        if (alen != nvram->size) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static const VMStateDescription vmstate_spapr_nvram = {
+    .name = "spapr_nvram",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_load = spapr_nvram_pre_load,
+    .post_load = spapr_nvram_post_load,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(size, sPAPRNVRAM),
+        VMSTATE_VBUFFER_ALLOC_UINT32(buf, sPAPRNVRAM, 1, NULL, 0, size),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static Property spapr_nvram_properties[] = {
     DEFINE_SPAPR_PROPERTIES(sPAPRNVRAM, sdev),
-    DEFINE_PROP_DRIVE("drive", sPAPRNVRAM, drive),
+    DEFINE_PROP_DRIVE("drive", sPAPRNVRAM, blk),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -182,7 +229,9 @@ static void spapr_nvram_class_init(ObjectClass *klass, void *data)
     k->dt_name = "nvram";
     k->dt_type = "nvram";
     k->dt_compatible = "qemu,spapr-nvram";
+    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
     dc->props = spapr_nvram_properties;
+    dc->vmsd = &vmstate_spapr_nvram;
 }
 
 static const TypeInfo spapr_nvram_type_info = {

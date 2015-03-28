@@ -32,6 +32,7 @@
 #include "kernel/stack.h"
 #include "arch/unix/plugins.h"
 #include "libopenbios/bindings.h"
+#include "libopenbios/console.h"
 #include "libopenbios/openbios.h"
 #include "openbios-version.h"
 
@@ -79,6 +80,26 @@ extern void flush_icache_range(char *start, char *stop);
 
 void flush_icache_range(char *start, char *stop)
 {
+}
+#endif
+
+#ifdef CONFIG_PPC
+/* Expose system level is_machine helpers to make generic code easier */
+
+#include "drivers/drivers.h"
+int is_apple(void)
+{
+    return 0;
+}
+
+int is_oldworld(void)
+{
+    return 0;
+}
+
+int is_newworld(void)
+{
+    return 0;
 }
 #endif
 
@@ -159,7 +180,7 @@ static ucell read_dictionary(char *fil)
  * functions used by primitives
  */
 
-int availchar(void)
+static int unix_availchar(void)
 {
 	int tmp = getc(stdin);
 	if (tmp != EOF) {
@@ -168,6 +189,23 @@ int availchar(void)
 	}
 	return 0;
 }
+
+static int unix_putchar(int c)
+{
+	putc(c, stdout);
+	return c;
+}
+
+static int unix_getchar(void)
+{
+	return getc(stdin);
+}
+
+static struct _console_ops unix_console_ops = {
+	.putchar = unix_putchar,
+	.availchar = unix_availchar,
+	.getchar = unix_getchar
+};
 
 u8 inb(u32 reg)
 {
@@ -477,6 +515,9 @@ int main(int argc, char *argv[])
 		printk(USAGE, argv[0]);
 		return 1;
 	}
+
+	/* Initialise console */
+	init_console(unix_console_ops);
 
 	if ((dict = (unsigned char *) malloc(DICTIONARY_SIZE)) == NULL) {
 		printk("panic: not enough memory.\n");

@@ -29,6 +29,7 @@ static union {
 #define OFMEM      	(&s_ofmem_data.ofmem)
 #define TOP_OF_RAM 	(s_ofmem_data.memory + MEMSIZE)
 
+static retain_t s_retained;
 translation_t **g_ofmem_translations = &s_ofmem_data.ofmem.trans;
 
 ucell *va2ttedata = 0;
@@ -41,7 +42,7 @@ static inline size_t ALIGN_SIZE(size_t x, size_t a)
 
 static ucell get_heap_top( void )
 {
-	return (ucell)(TOP_OF_RAM - ALIGN_SIZE(sizeof(retain_t), 8));
+	return (ucell)TOP_OF_RAM;
 }
 
 ofmem_t* ofmem_arch_get_private(void)
@@ -85,8 +86,7 @@ ucell ofmem_arch_get_iomem_top(void)
 
 retain_t *ofmem_arch_get_retained(void)
 {
-	/* Retained area is at the top of physical RAM */
-	return (retain_t *)(qemu_mem_size - sizeof(retain_t));
+	return (&s_retained);
 }
 
 int ofmem_arch_get_translation_entry_size(void)
@@ -103,12 +103,12 @@ void ofmem_arch_create_translation_entry(ucell *transentry, translation_t *t)
 
 		virtual address
 		length
-		mode 
+		mode (valid TTE for start of translation region)
 	*/
 
 	transentry[0] = t->virt;
 	transentry[1] = t->size;
-	transentry[2] = t->mode;
+	transentry[2] = t->phys | t->mode | SPITFIRE_TTE_VALID;
 }
 
 /* Return the size of a memory available entry given the phandle in cells */
@@ -215,14 +215,14 @@ int ofmem_arch_encode_physaddr(ucell *p, phys_addr_t value)
 ucell ofmem_arch_default_translation_mode( phys_addr_t phys )
 {
 	/* Writable, cacheable */
-	/* not privileged and not locked */
-	return SPITFIRE_TTE_CP | SPITFIRE_TTE_CV | SPITFIRE_TTE_WRITABLE;
+	/* Privileged and not locked */
+	return SPITFIRE_TTE_CP | SPITFIRE_TTE_CV | SPITFIRE_TTE_WRITABLE | SPITFIRE_TTE_PRIVILEGED;
 }
 
 ucell ofmem_arch_io_translation_mode( phys_addr_t phys )
 {
-	/* Writable, not privileged and not locked */
-	return SPITFIRE_TTE_CV | SPITFIRE_TTE_WRITABLE;
+	/* Writable, privileged and not locked */
+	return SPITFIRE_TTE_CV | SPITFIRE_TTE_WRITABLE | SPITFIRE_TTE_PRIVILEGED;
 }
 
 /* Architecture-specific OFMEM helpers */
@@ -366,7 +366,7 @@ void ofmem_init( void )
 	ofmem_walk_boot_map(remap_page_range);
 
         /* Map the memory */
-        ofmem_map_page_range(0, 0, qemu_mem_size, 0x36);
+        ofmem_map_page_range(PAGE_SIZE, PAGE_SIZE, 0x800000, 0x36);
 
 	if (!(retained->magic == RETAIN_MAGIC)) {
 		OFMEM_TRACE("ofmem_init: no retained magic found, creating\n");

@@ -101,6 +101,12 @@
 #define KBD_OUT_OBF             0x10    /* Keyboard output buffer full */
 #define KBD_OUT_MOUSE_OBF       0x20    /* Mouse output buffer full */
 
+/* OSes typically write 0xdd/0xdf to turn the A20 line off and on.
+ * We make the default value of the outport include these four bits,
+ * so that the subsection is rarely necessary.
+ */
+#define KBD_OUT_ONES            0xcc
+
 /* Mouse Commands */
 #define AUX_SET_SCALE11		0xE6	/* Set 1:1 scaling */
 #define AUX_SET_SCALE21		0xE7	/* Set 2:1 scaling */
@@ -131,6 +137,7 @@ typedef struct KBDState {
     uint8_t status;
     uint8_t mode;
     uint8_t outport;
+    bool outport_present;
     /* Bitmask of devices with data available.  */
     uint8_t pending;
     void *kbd;
@@ -229,7 +236,7 @@ static void kbd_write_command(void *opaque, hwaddr addr,
 {
     KBDState *s = opaque;
 
-    DPRINTF("kbd: write cmd=0x%02x\n", val);
+    DPRINTF("kbd: write cmd=0x%02" PRIx64 "\n", val);
 
     /* Bits 3-0 of the output port P2 of the keyboard controller may be pulsed
      * low for approximately 6 micro seconds. Bits 3-0 of the KBD_CCMD_PULSE
@@ -281,7 +288,7 @@ static void kbd_write_command(void *opaque, hwaddr addr,
         kbd_update_irq(s);
         break;
     case KBD_CCMD_READ_INPORT:
-        kbd_queue(s, 0x00, 0);
+        kbd_queue(s, 0x80, 0);
         break;
     case KBD_CCMD_READ_OUTPORT:
         kbd_queue(s, s->outport, 0);
@@ -330,7 +337,7 @@ static void kbd_write_data(void *opaque, hwaddr addr,
 {
     KBDState *s = opaque;
 
-    DPRINTF("kbd: write data=0x%02x\n", val);
+    DPRINTF("kbd: write data=0x%02" PRIx64 "\n", val);
 
     switch(s->write_cmd) {
     case 0:
@@ -366,19 +373,68 @@ static void kbd_reset(void *opaque)
 
     s->mode = KBD_MODE_KBD_INT | KBD_MODE_MOUSE_INT;
     s->status = KBD_STAT_CMD | KBD_STAT_UNLOCKED;
-    s->outport = KBD_OUT_RESET | KBD_OUT_A20;
+    s->outport = KBD_OUT_RESET | KBD_OUT_A20 | KBD_OUT_ONES;
+    s->outport_present = false;
+}
+
+static uint8_t kbd_outport_default(KBDState *s)
+{
+    return KBD_OUT_RESET | KBD_OUT_A20 | KBD_OUT_ONES
+           | (s->status & KBD_STAT_OBF ? KBD_OUT_OBF : 0)
+           | (s->status & KBD_STAT_MOUSE_OBF ? KBD_OUT_MOUSE_OBF : 0);
+}
+
+static int kbd_outport_post_load(void *opaque, int version_id)
+{
+    KBDState *s = opaque;
+    s->outport_present = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_kbd_outport = {
+    .name = "pckbd_outport",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = kbd_outport_post_load,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT8(outport, KBDState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool kbd_outport_needed(void *opaque)
+{
+    KBDState *s = opaque;
+    return s->outport != kbd_outport_default(s);
+}
+
+static int kbd_post_load(void *opaque, int version_id)
+{
+    KBDState *s = opaque;
+    if (!s->outport_present) {
+        s->outport = kbd_outport_default(s);
+    }
+    s->outport_present = false;
+    return 0;
 }
 
 static const VMStateDescription vmstate_kbd = {
     .name = "pckbd",
     .version_id = 3,
     .minimum_version_id = 3,
-    .minimum_version_id_old = 3,
-    .fields      = (VMStateField []) {
+    .post_load = kbd_post_load,
+    .fields = (VMStateField[]) {
         VMSTATE_UINT8(write_cmd, KBDState),
         VMSTATE_UINT8(status, KBDState),
         VMSTATE_UINT8(mode, KBDState),
         VMSTATE_UINT8(pending, KBDState),
+        VMSTATE_END_OF_LIST()
+    },
+    .subsections = (VMStateSubsection[]) {
+        {
+            .vmsd = &vmstate_kbd_outport,
+            .needed = kbd_outport_needed,
+        },
         VMSTATE_END_OF_LIST()
     }
 };
@@ -424,7 +480,7 @@ void i8042_mm_init(qemu_irq kbd_irq, qemu_irq mouse_irq,
 
     vmstate_register(NULL, 0, &vmstate_kbd, s);
 
-    memory_region_init_io(region, &i8042_mmio_ops, s, "i8042", size);
+    memory_region_init_io(region, NULL, &i8042_mmio_ops, s, "i8042", size);
 
     s->kbd = ps2_kbd_init(kbd_update_kbd_irq, s);
     s->mouse = ps2_mouse_init(kbd_update_aux_irq, s);
@@ -462,8 +518,7 @@ static const VMStateDescription vmstate_kbd_isa = {
     .name = "pckbd",
     .version_id = 3,
     .minimum_version_id = 3,
-    .minimum_version_id_old = 3,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_STRUCT(kbd, ISAKBDState, 0, vmstate_kbd, KBDState),
         VMSTATE_END_OF_LIST()
     }
@@ -489,32 +544,39 @@ static const MemoryRegionOps i8042_cmd_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
-static int i8042_initfn(ISADevice *dev)
+static void i8042_initfn(Object *obj)
 {
+    ISAKBDState *isa_s = I8042(obj);
+    KBDState *s = &isa_s->kbd;
+
+    memory_region_init_io(isa_s->io + 0, obj, &i8042_data_ops, s,
+                          "i8042-data", 1);
+    memory_region_init_io(isa_s->io + 1, obj, &i8042_cmd_ops, s,
+                          "i8042-cmd", 1);
+}
+
+static void i8042_realizefn(DeviceState *dev, Error **errp)
+{
+    ISADevice *isadev = ISA_DEVICE(dev);
     ISAKBDState *isa_s = I8042(dev);
     KBDState *s = &isa_s->kbd;
 
-    isa_init_irq(dev, &s->irq_kbd, 1);
-    isa_init_irq(dev, &s->irq_mouse, 12);
+    isa_init_irq(isadev, &s->irq_kbd, 1);
+    isa_init_irq(isadev, &s->irq_mouse, 12);
 
-    memory_region_init_io(isa_s->io + 0, &i8042_data_ops, s, "i8042-data", 1);
-    isa_register_ioport(dev, isa_s->io + 0, 0x60);
-
-    memory_region_init_io(isa_s->io + 1, &i8042_cmd_ops, s, "i8042-cmd", 1);
-    isa_register_ioport(dev, isa_s->io + 1, 0x64);
+    isa_register_ioport(isadev, isa_s->io + 0, 0x60);
+    isa_register_ioport(isadev, isa_s->io + 1, 0x64);
 
     s->kbd = ps2_kbd_init(kbd_update_kbd_irq, s);
     s->mouse = ps2_mouse_init(kbd_update_aux_irq, s);
     qemu_register_reset(kbd_reset, s);
-    return 0;
 }
 
 static void i8042_class_initfn(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    ISADeviceClass *ic = ISA_DEVICE_CLASS(klass);
-    ic->init = i8042_initfn;
-    dc->no_user = 1;
+
+    dc->realize = i8042_realizefn;
     dc->vmsd = &vmstate_kbd_isa;
 }
 
@@ -522,6 +584,7 @@ static const TypeInfo i8042_info = {
     .name          = TYPE_I8042,
     .parent        = TYPE_ISA_DEVICE,
     .instance_size = sizeof(ISAKBDState),
+    .instance_init = i8042_initfn,
     .class_init    = i8042_class_initfn,
 };
 

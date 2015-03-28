@@ -23,6 +23,12 @@ FILE_LICENCE ( GPL2_OR_LATER );
 #include <config/ioapi.h>
 #include <ipxe/uaccess.h>
 
+/** Page size */
+#define PAGE_SIZE ( 1 << PAGE_SHIFT )
+
+/** Page mask */
+#define PAGE_MASK ( PAGE_SIZE - 1 )
+
 /**
  * Calculate static inline I/O API function name
  *
@@ -53,7 +59,6 @@ FILE_LICENCE ( GPL2_OR_LATER );
 	PROVIDE_SINGLE_API_INLINE ( IOAPI_PREFIX_ ## _subsys, _api_func )
 
 /* Include all architecture-independent I/O API headers */
-#include <ipxe/efi/efi_io.h>
 
 /* Include all architecture-dependent I/O API headers */
 #include <bits/io.h>

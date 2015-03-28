@@ -93,7 +93,7 @@ FEATURE ( FEATURE_PROTOCOL, "SRP", DHCP_EB_FEATURE_SRP, 1 );
 	SRP_LOGIN_REJ_REASON_NO_MORE_CHANNELS,				      \
 	"RDMA channel limit reached for this initiator" )
 #define EPERM_LOGIN_REJ( reason_nibble )				      \
-	EUNIQ ( EPERM, (reason_nibble), EPERM_UNKNOWN,			      \
+	EUNIQ ( EINFO_EPERM, (reason_nibble), EPERM_UNKNOWN,		      \
 		EPERM_INSUFFICIENT_RESOURCES, EPERM_BAD_MAX_I_T_IU_LEN,	      \
 		EPERM_CANNOT_ASSOCIATE, EPERM_UNSUPPORTED_BUFFER_FORMAT,      \
 		EPERM_NO_MULTIPLE_CHANNELS, EPERM_NO_MORE_CHANNELS )
@@ -476,12 +476,14 @@ static int srp_rsp ( struct srp_device *srpdev,
 	const struct srp_rsp *rsp = data;
 	struct srp_command *srpcmd;
 	struct scsi_rsp response;
-	const void *sense;
 	ssize_t data_out_residual_count;
 	ssize_t data_in_residual_count;
 
 	/* Sanity check */
-	if ( len < sizeof ( *rsp ) ) {
+	if ( ( len < sizeof ( *rsp ) ) ||
+	     ( len < ( sizeof ( *rsp ) +
+		       srp_rsp_response_data_len ( rsp ) +
+		       srp_rsp_sense_data_len ( rsp ) ) ) ) {
 		DBGC ( srpdev, "SRP %p RSP too short (%zd bytes)\n",
 		       srpdev, len );
 		return -EINVAL;
@@ -523,9 +525,8 @@ static int srp_rsp ( struct srp_device *srpdev,
 	} else if ( rsp->valid & SRP_RSP_VALID_DIUNDER ) {
 		response.overrun = -(data_in_residual_count);
 	}
-	sense = srp_rsp_sense_data ( rsp );
-	if ( sense )
-		memcpy ( &response.sense, sense, sizeof ( response.sense ) );
+	scsi_parse_sense ( srp_rsp_sense_data ( rsp ),
+			   srp_rsp_sense_data_len ( rsp ), &response.sense );
 
 	/* Report SCSI response */
 	scsi_response ( &srpcmd->scsi, &response );

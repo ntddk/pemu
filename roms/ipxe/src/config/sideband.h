@@ -10,8 +10,10 @@
 FILE_LICENCE ( GPL2_OR_LATER );
 
 //#define	CONFIG_BOFM	/* IBM's BladeCenter Open Fabric Manager */
-//#define	VMWARE_SETTINGS	/* VMware GuestInfo settings */
 
+#include <config/named.h>
+#include NAMED_CONFIG(sideband.h)
 #include <config/local/sideband.h>
+#include LOCAL_NAMED_CONFIG(sideband.h)
 
 #endif /* CONFIG_SIDEBAND_H */

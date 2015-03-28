@@ -54,6 +54,15 @@ struct device_description {
 /** ISA bus type */
 #define BUS_TYPE_ISA 5
 
+/** TAP bus type */
+#define BUS_TYPE_TAP 6
+
+/** EFI bus type */
+#define BUS_TYPE_EFI 7
+
+/** Xen bus type */
+#define BUS_TYPE_XEN 8
+
 /** A hardware device */
 struct device {
 	/** Name */

@@ -24,6 +24,7 @@
 #include "hw/hw.h"
 #include "hw/isa/isa.h"
 #include "qemu/main-loop.h"
+#include "trace.h"
 
 /* #define DEBUG_DMA */
 
@@ -473,8 +474,7 @@ static void dma_reset(void *opaque)
 
 static int dma_phony_handler (void *opaque, int nchan, int dma_pos, int dma_len)
 {
-    dolog ("unregistered DMA channel used nchan=%d dma_pos=%d dma_len=%d\n",
-           nchan, dma_pos, dma_len);
+    trace_i8257_unregistered_dma(nchan, dma_pos, dma_len);
     return dma_pos;
 }
 
@@ -523,7 +523,7 @@ static void dma_init2(struct dma_cont *d, int base, int dshift,
     d->dshift = dshift;
     d->cpu_request_exit = cpu_request_exit;
 
-    memory_region_init_io(&d->channel_io, &channel_io_ops, d,
+    memory_region_init_io(&d->channel_io, NULL, &channel_io_ops, d,
                           "dma-chan", 8 << d->dshift);
     memory_region_add_subregion(isa_address_space_io(NULL),
                                 base, &d->channel_io);
@@ -535,7 +535,7 @@ static void dma_init2(struct dma_cont *d, int base, int dshift,
                                  "dma-pageh");
     }
 
-    memory_region_init_io(&d->cont_io, &cont_io_ops, d, "dma-cont",
+    memory_region_init_io(&d->cont_io, NULL, &cont_io_ops, d, "dma-cont",
                           8 << d->dshift);
     memory_region_add_subregion(isa_address_space_io(NULL),
                                 base + (8 << d->dshift), &d->cont_io);
@@ -551,8 +551,7 @@ static const VMStateDescription vmstate_dma_regs = {
     .name = "dma_regs",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_INT32_ARRAY(now, struct dma_regs, 2),
         VMSTATE_UINT16_ARRAY(base, struct dma_regs, 2),
         VMSTATE_UINT8(mode, struct dma_regs),
@@ -575,9 +574,8 @@ static const VMStateDescription vmstate_dma = {
     .name = "dma",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .post_load = dma_post_load,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT8(command, struct dma_cont),
         VMSTATE_UINT8(mask, struct dma_cont),
         VMSTATE_UINT8(flip_flop, struct dma_cont),

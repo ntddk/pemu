@@ -85,6 +85,7 @@ static void ioh3420_reset(DeviceState *qdev)
     pcie_cap_root_reset(d);
     pcie_cap_deverr_reset(d);
     pcie_cap_slot_reset(d);
+    pcie_cap_arifwd_reset(d);
     pcie_aer_root_reset(d);
     pci_bridge_reset(qdev);
     pci_bridge_disable_base_limit(d);
@@ -92,9 +93,8 @@ static void ioh3420_reset(DeviceState *qdev)
 
 static int ioh3420_initfn(PCIDevice *d)
 {
-    PCIBridge* br = DO_UPCAST(PCIBridge, dev, d);
-    PCIEPort *p = DO_UPCAST(PCIEPort, br, br);
-    PCIESlot *s = DO_UPCAST(PCIESlot, port, p);
+    PCIEPort *p = PCIE_PORT(d);
+    PCIESlot *s = PCIE_SLOT(d);
     int rc;
 
     rc = pci_bridge_initfn(d, TYPE_PCIE_BUS);
@@ -119,6 +119,8 @@ static int ioh3420_initfn(PCIDevice *d)
     if (rc < 0) {
         goto err_msi;
     }
+
+    pcie_cap_arifwd_init(d);
     pcie_cap_deverr_init(d);
     pcie_cap_slot_init(d, s->slot);
     pcie_chassis_create(s->chassis);
@@ -148,9 +150,7 @@ err_bridge:
 
 static void ioh3420_exitfn(PCIDevice *d)
 {
-    PCIBridge* br = DO_UPCAST(PCIBridge, dev, d);
-    PCIEPort *p = DO_UPCAST(PCIEPort, br, br);
-    PCIESlot *s = DO_UPCAST(PCIESlot, port, p);
+    PCIESlot *s = PCIE_SLOT(d);
 
     pcie_aer_exit(d);
     pcie_chassis_del_slot(s);
@@ -159,52 +159,23 @@ static void ioh3420_exitfn(PCIDevice *d)
     pci_bridge_exitfn(d);
 }
 
-PCIESlot *ioh3420_init(PCIBus *bus, int devfn, bool multifunction,
-                         const char *bus_name, pci_map_irq_fn map_irq,
-                         uint8_t port, uint8_t chassis, uint16_t slot)
-{
-    PCIDevice *d;
-    PCIBridge *br;
-    DeviceState *qdev;
-
-    d = pci_create_multifunction(bus, devfn, multifunction, "ioh3420");
-    if (!d) {
-        return NULL;
-    }
-    br = DO_UPCAST(PCIBridge, dev, d);
-
-    qdev = &br->dev.qdev;
-    pci_bridge_map_irq(br, bus_name, map_irq);
-    qdev_prop_set_uint8(qdev, "port", port);
-    qdev_prop_set_uint8(qdev, "chassis", chassis);
-    qdev_prop_set_uint16(qdev, "slot", slot);
-    qdev_init_nofail(qdev);
-
-    return DO_UPCAST(PCIESlot, port, DO_UPCAST(PCIEPort, br, br));
-}
+static Property ioh3420_props[] = {
+    DEFINE_PROP_BIT(COMPAT_PROP_PCP, PCIDevice, cap_present,
+                    QEMU_PCIE_SLTCAP_PCP_BITNR, true),
+    DEFINE_PROP_END_OF_LIST()
+};
 
 static const VMStateDescription vmstate_ioh3420 = {
     .name = "ioh-3240-express-root-port",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .post_load = pcie_cap_slot_post_load,
     .fields = (VMStateField[]) {
-        VMSTATE_PCIE_DEVICE(port.br.dev, PCIESlot),
-        VMSTATE_STRUCT(port.br.dev.exp.aer_log, PCIESlot, 0,
-                       vmstate_pcie_aer_log, PCIEAERLog),
+        VMSTATE_PCIE_DEVICE(parent_obj.parent_obj.parent_obj, PCIESlot),
+        VMSTATE_STRUCT(parent_obj.parent_obj.parent_obj.exp.aer_log,
+                       PCIESlot, 0, vmstate_pcie_aer_log, PCIEAERLog),
         VMSTATE_END_OF_LIST()
     }
-};
-
-static Property ioh3420_properties[] = {
-    DEFINE_PROP_UINT8("port", PCIESlot, port.port, 0),
-    DEFINE_PROP_UINT8("chassis", PCIESlot, chassis, 0),
-    DEFINE_PROP_UINT16("slot", PCIESlot, slot, 0),
-    DEFINE_PROP_UINT16("aer_log_max", PCIESlot,
-    port.br.dev.exp.aer_log.log_max,
-    PCIE_AER_LOG_MAX_DEFAULT),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ioh3420_class_init(ObjectClass *klass, void *data)
@@ -220,16 +191,16 @@ static void ioh3420_class_init(ObjectClass *klass, void *data)
     k->vendor_id = PCI_VENDOR_ID_INTEL;
     k->device_id = PCI_DEVICE_ID_IOH_EPORT;
     k->revision = PCI_DEVICE_ID_IOH_REV;
+    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->desc = "Intel IOH device id 3420 PCIE Root Port";
     dc->reset = ioh3420_reset;
     dc->vmsd = &vmstate_ioh3420;
-    dc->props = ioh3420_properties;
+    dc->props = ioh3420_props;
 }
 
 static const TypeInfo ioh3420_info = {
     .name          = "ioh3420",
-    .parent        = TYPE_PCI_DEVICE,
-    .instance_size = sizeof(PCIESlot),
+    .parent        = TYPE_PCIE_SLOT,
     .class_init    = ioh3420_class_init,
 };
 

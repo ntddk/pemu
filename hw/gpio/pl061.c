@@ -28,12 +28,17 @@ static const uint8_t pl061_id[12] =
 static const uint8_t pl061_id_luminary[12] =
   { 0x00, 0x00, 0x00, 0x00, 0x61, 0x00, 0x18, 0x01, 0x0d, 0xf0, 0x05, 0xb1 };
 
-typedef struct {
-    SysBusDevice busdev;
+#define TYPE_PL061 "pl061"
+#define PL061(obj) OBJECT_CHECK(PL061State, (obj), TYPE_PL061)
+
+typedef struct PL061State {
+    SysBusDevice parent_obj;
+
     MemoryRegion iomem;
     uint32_t locked;
     uint32_t data;
-    uint32_t old_data;
+    uint32_t old_out_data;
+    uint32_t old_in_data;
     uint32_t dir;
     uint32_t isense;
     uint32_t ibe;
@@ -55,68 +60,98 @@ typedef struct {
     qemu_irq irq;
     qemu_irq out[8];
     const unsigned char *id;
-} pl061_state;
+} PL061State;
 
 static const VMStateDescription vmstate_pl061 = {
     .name = "pl061",
-    .version_id = 2,
-    .minimum_version_id = 1,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (VMStateField[]) {
-        VMSTATE_UINT32(locked, pl061_state),
-        VMSTATE_UINT32(data, pl061_state),
-        VMSTATE_UINT32(old_data, pl061_state),
-        VMSTATE_UINT32(dir, pl061_state),
-        VMSTATE_UINT32(isense, pl061_state),
-        VMSTATE_UINT32(ibe, pl061_state),
-        VMSTATE_UINT32(iev, pl061_state),
-        VMSTATE_UINT32(im, pl061_state),
-        VMSTATE_UINT32(istate, pl061_state),
-        VMSTATE_UINT32(afsel, pl061_state),
-        VMSTATE_UINT32(dr2r, pl061_state),
-        VMSTATE_UINT32(dr4r, pl061_state),
-        VMSTATE_UINT32(dr8r, pl061_state),
-        VMSTATE_UINT32(odr, pl061_state),
-        VMSTATE_UINT32(pur, pl061_state),
-        VMSTATE_UINT32(pdr, pl061_state),
-        VMSTATE_UINT32(slr, pl061_state),
-        VMSTATE_UINT32(den, pl061_state),
-        VMSTATE_UINT32(cr, pl061_state),
-        VMSTATE_UINT32(float_high, pl061_state),
-        VMSTATE_UINT32_V(amsel, pl061_state, 2),
+        VMSTATE_UINT32(locked, PL061State),
+        VMSTATE_UINT32(data, PL061State),
+        VMSTATE_UINT32(old_out_data, PL061State),
+        VMSTATE_UINT32(old_in_data, PL061State),
+        VMSTATE_UINT32(dir, PL061State),
+        VMSTATE_UINT32(isense, PL061State),
+        VMSTATE_UINT32(ibe, PL061State),
+        VMSTATE_UINT32(iev, PL061State),
+        VMSTATE_UINT32(im, PL061State),
+        VMSTATE_UINT32(istate, PL061State),
+        VMSTATE_UINT32(afsel, PL061State),
+        VMSTATE_UINT32(dr2r, PL061State),
+        VMSTATE_UINT32(dr4r, PL061State),
+        VMSTATE_UINT32(dr8r, PL061State),
+        VMSTATE_UINT32(odr, PL061State),
+        VMSTATE_UINT32(pur, PL061State),
+        VMSTATE_UINT32(pdr, PL061State),
+        VMSTATE_UINT32(slr, PL061State),
+        VMSTATE_UINT32(den, PL061State),
+        VMSTATE_UINT32(cr, PL061State),
+        VMSTATE_UINT32(float_high, PL061State),
+        VMSTATE_UINT32_V(amsel, PL061State, 2),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static void pl061_update(pl061_state *s)
+static void pl061_update(PL061State *s)
 {
     uint8_t changed;
     uint8_t mask;
     uint8_t out;
     int i;
 
+    DPRINTF("dir = %d, data = %d\n", s->dir, s->data);
+
     /* Outputs float high.  */
     /* FIXME: This is board dependent.  */
     out = (s->data & s->dir) | ~s->dir;
-    changed = s->old_data ^ out;
-    if (!changed)
-        return;
-
-    s->old_data = out;
-    for (i = 0; i < 8; i++) {
-        mask = 1 << i;
-        if (changed & mask) {
-            DPRINTF("Set output %d = %d\n", i, (out & mask) != 0);
-            qemu_set_irq(s->out[i], (out & mask) != 0);
+    changed = s->old_out_data ^ out;
+    if (changed) {
+        s->old_out_data = out;
+        for (i = 0; i < 8; i++) {
+            mask = 1 << i;
+            if (changed & mask) {
+                DPRINTF("Set output %d = %d\n", i, (out & mask) != 0);
+                qemu_set_irq(s->out[i], (out & mask) != 0);
+            }
         }
     }
 
-    /* FIXME: Implement input interrupts.  */
+    /* Inputs */
+    changed = (s->old_in_data ^ s->data) & ~s->dir;
+    if (changed) {
+        s->old_in_data = s->data;
+        for (i = 0; i < 8; i++) {
+            mask = 1 << i;
+            if (changed & mask) {
+                DPRINTF("Changed input %d = %d\n", i, (s->data & mask) != 0);
+
+                if (!(s->isense & mask)) {
+                    /* Edge interrupt */
+                    if (s->ibe & mask) {
+                        /* Any edge triggers the interrupt */
+                        s->istate |= mask;
+                    } else {
+                        /* Edge is selected by IEV */
+                        s->istate |= ~(s->data ^ s->iev) & mask;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Level interrupt */
+    s->istate |= ~(s->data ^ s->iev) & s->isense;
+
+    DPRINTF("istate = %02X\n", s->istate);
+
+    qemu_set_irq(s->irq, (s->istate & s->im) != 0);
 }
 
 static uint64_t pl061_read(void *opaque, hwaddr offset,
                            unsigned size)
 {
-    pl061_state *s = (pl061_state *)opaque;
+    PL061State *s = (PL061State *)opaque;
 
     if (offset >= 0xfd0 && offset < 0x1000) {
         return s->id[(offset - 0xfd0) >> 2];
@@ -173,7 +208,7 @@ static uint64_t pl061_read(void *opaque, hwaddr offset,
 static void pl061_write(void *opaque, hwaddr offset,
                         uint64_t value, unsigned size)
 {
-    pl061_state *s = (pl061_state *)opaque;
+    PL061State *s = (PL061State *)opaque;
     uint8_t mask;
 
     if (offset < 0x400) {
@@ -246,7 +281,7 @@ static void pl061_write(void *opaque, hwaddr offset,
     pl061_update(s);
 }
 
-static void pl061_reset(pl061_state *s)
+static void pl061_reset(PL061State *s)
 {
   s->locked = 1;
   s->cr = 0xff;
@@ -254,7 +289,7 @@ static void pl061_reset(pl061_state *s)
 
 static void pl061_set_irq(void * opaque, int irq, int level)
 {
-    pl061_state *s = (pl061_state *)opaque;
+    PL061State *s = (PL061State *)opaque;
     uint8_t mask;
 
     mask = 1 << irq;
@@ -272,27 +307,32 @@ static const MemoryRegionOps pl061_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-static int pl061_init(SysBusDevice *dev, const unsigned char *id)
+static int pl061_initfn(SysBusDevice *sbd)
 {
-    pl061_state *s = FROM_SYSBUS(pl061_state, dev);
-    s->id = id;
-    memory_region_init_io(&s->iomem, &pl061_ops, s, "pl061", 0x1000);
-    sysbus_init_mmio(dev, &s->iomem);
-    sysbus_init_irq(dev, &s->irq);
-    qdev_init_gpio_in(&dev->qdev, pl061_set_irq, 8);
-    qdev_init_gpio_out(&dev->qdev, s->out, 8);
+    DeviceState *dev = DEVICE(sbd);
+    PL061State *s = PL061(dev);
+
+    memory_region_init_io(&s->iomem, OBJECT(s), &pl061_ops, s, "pl061", 0x1000);
+    sysbus_init_mmio(sbd, &s->iomem);
+    sysbus_init_irq(sbd, &s->irq);
+    qdev_init_gpio_in(dev, pl061_set_irq, 8);
+    qdev_init_gpio_out(dev, s->out, 8);
     pl061_reset(s);
     return 0;
 }
 
-static int pl061_init_luminary(SysBusDevice *dev)
+static void pl061_luminary_init(Object *obj)
 {
-    return pl061_init(dev, pl061_id_luminary);
+    PL061State *s = PL061(obj);
+
+    s->id = pl061_id_luminary;
 }
 
-static int pl061_init_arm(SysBusDevice *dev)
+static void pl061_init(Object *obj)
 {
-    return pl061_init(dev, pl061_id);
+    PL061State *s = PL061(obj);
+
+    s->id = pl061_id;
 }
 
 static void pl061_class_init(ObjectClass *klass, void *data)
@@ -300,31 +340,22 @@ static void pl061_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     SysBusDeviceClass *k = SYS_BUS_DEVICE_CLASS(klass);
 
-    k->init = pl061_init_arm;
+    k->init = pl061_initfn;
     dc->vmsd = &vmstate_pl061;
 }
 
 static const TypeInfo pl061_info = {
-    .name          = "pl061",
+    .name          = TYPE_PL061,
     .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(pl061_state),
+    .instance_size = sizeof(PL061State),
+    .instance_init = pl061_init,
     .class_init    = pl061_class_init,
 };
 
-static void pl061_luminary_class_init(ObjectClass *klass, void *data)
-{
-    DeviceClass *dc = DEVICE_CLASS(klass);
-    SysBusDeviceClass *k = SYS_BUS_DEVICE_CLASS(klass);
-
-    k->init = pl061_init_luminary;
-    dc->vmsd = &vmstate_pl061;
-}
-
 static const TypeInfo pl061_luminary_info = {
     .name          = "pl061_luminary",
-    .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(pl061_state),
-    .class_init    = pl061_luminary_class_init,
+    .parent        = TYPE_PL061,
+    .instance_init = pl061_luminary_init,
 };
 
 static void pl061_register_types(void)

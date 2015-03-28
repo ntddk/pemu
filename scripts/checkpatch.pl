@@ -206,9 +206,13 @@ our $UTF8	= qr {
 	|  \xF4[\x80-\x8F][\x80-\xBF]{2}     # plane 16
 }x;
 
+# There are still some false positives, but this catches most
+# common cases.
 our $typeTypedefs = qr{(?x:
-	(?:__)?(?:u|s|be|le)(?:8|16|32|64)|
-	atomic_t
+        [A-Z][A-Z\d_]*[a-z][A-Za-z\d_]*     # camelcase
+        | [A-Z][A-Z\d_]*AIOCB               # all uppercase
+        | [A-Z][A-Z\d_]*CPU                 # all uppercase
+        | QEMUBH                            # all uppercase
 )};
 
 our $logFunctions = qr{(?x:
@@ -1363,7 +1367,7 @@ sub process {
 # Check for incorrect file permissions
 		if ($line =~ /^new (file )?mode.*[7531]\d{0,2}$/) {
 			my $permhere = $here . "FILE: $realfile\n";
-			if ($realfile =~ /(Makefile|Kconfig|\.c|\.h|\.S|\.tmpl)$/) {
+			if ($realfile =~ /(Makefile|Kconfig|\.c|\.cpp|\.h|\.S|\.tmpl)$/) {
 				ERROR("do not set execute permissions for source files\n" . $permhere);
 			}
 		}
@@ -1460,7 +1464,7 @@ sub process {
 		}
 
 # check we are in a valid source file if not then ignore this hunk
-		next if ($realfile !~ /\.(h|c|s|S|pl|sh)$/);
+		next if ($realfile !~ /\.(h|c|cpp|s|S|pl|sh)$/);
 
 #80 column limit
 		if ($line =~ /^\+/ && $prevrawline !~ /\/\*\*/ &&
@@ -1495,7 +1499,7 @@ sub process {
 		}
 
 # check we are in a valid source file C or perl if not then ignore this hunk
-		next if ($realfile !~ /\.(h|c|pl)$/);
+		next if ($realfile !~ /\.(h|c|cpp|pl)$/);
 
 # in QEMU, no tabs are allowed
 		if ($rawline =~ /^\+.*\t/) {
@@ -1505,7 +1509,7 @@ sub process {
 		}
 
 # check we are in a valid C source file if not then ignore this hunk
-		next if ($realfile !~ /\.(h|c)$/);
+		next if ($realfile !~ /\.(h|c|cpp)$/);
 
 # check for RCS/CVS revision markers
 		if ($rawline =~ /^\+.*\$(Revision|Log|Id)(?:\$|)/) {
@@ -1969,6 +1973,9 @@ sub process {
 				asm|__asm__)$/x)
 			{
 
+			# Ignore 'catch (...)' in C++
+			} elsif ($name =~ /^catch$/ && $realfile =~ /(\.cpp|\.h)$/) {
+
 			# cpp #define statements have non-optional spaces, ie
 			# if there is a space between the name and the open
 			# parenthesis it is simply not a parameter group.
@@ -1992,7 +1999,7 @@ sub process {
 				\+=|-=|\*=|\/=|%=|\^=|\|=|&=|
 				=>|->|<<|>>|<|>|=|!|~|
 				&&|\|\||,|\^|\+\+|--|&|\||\+|-|\*|\/|%|
-				\?|:
+				\?|::|:
 			}x;
 			my @elements = split(/($ops|;)/, $opline);
 			my $off = 0;
@@ -2062,6 +2069,10 @@ sub process {
 				# // is a comment
 				} elsif ($op eq '//') {
 
+				# Ignore : used in class declaration in C++
+				} elsif ($opv eq ':B' && $ctx =~ /Wx[WE]/ &&
+						 $line =~ /class/ && $realfile =~ /(\.cpp|\.h)$/) {
+
 				# No spaces for:
 				#   ->
 				#   :   when part of a bitfield
@@ -2088,7 +2099,10 @@ sub process {
 				} elsif ($op eq '!' || $op eq '~' ||
 					 $opv eq '*U' || $opv eq '-U' ||
 					 $opv eq '&U' || $opv eq '&&U') {
-					if ($ctx !~ /[WEBC]x./ && $ca !~ /(?:\)|!|~|\*|-|\&|\||\+\+|\-\-|\{)$/) {
+					if ($op eq '~' && $ca =~ /::$/ && $realfile =~ /(\.cpp|\.h)$/) {
+						# '~' used as a name of Destructor
+
+					} elsif ($ctx !~ /[WEBC]x./ && $ca !~ /(?:\)|!|~|\*|-|\&|\||\+\+|\-\-|\{)$/) {
 						ERROR("space required before that '$op' $at\n" . $hereptr);
 					}
 					if ($op eq '*' && $cc =~/\s*$Modifier\b/) {
@@ -2134,6 +2148,18 @@ sub process {
 				# All the others need spaces both sides.
 				} elsif ($ctx !~ /[EWC]x[CWE]/) {
 					my $ok = 0;
+
+					if ($realfile =~ /\.cpp|\.h$/) {
+						# Ignore template arguments <...> in C++
+						if (($op eq '<' || $op eq '>') && $line =~ /<.*>/) {
+							$ok = 1;
+						}
+
+						# Ignore :: in C++
+						if ($op eq '::') {
+							$ok = 1;
+						}
+					}
 
 					# Ignore email addresses <foo@bar>
 					if (($op eq '<' &&

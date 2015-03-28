@@ -24,7 +24,7 @@
  */
 #include "hw/hw.h"
 #include "hw/sysbus.h"
-#include "block/block.h"
+#include "sysemu/block-backend.h"
 #include "sysemu/dma.h"
 
 #include <hw/ide/internal.h>
@@ -82,7 +82,7 @@ static void mmio_ide_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps mmio_ide_ops = {
     .read = mmio_ide_read,
     .write = mmio_ide_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static uint64_t mmio_ide_status_read(void *opaque, hwaddr addr,
@@ -102,15 +102,14 @@ static void mmio_ide_cmd_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps mmio_ide_cs_ops = {
     .read = mmio_ide_status_read,
     .write = mmio_ide_cmd_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static const VMStateDescription vmstate_ide_mmio = {
     .name = "mmio-ide",
     .version_id = 3,
     .minimum_version_id = 0,
-    .minimum_version_id_old = 0,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_IDE_BUS(bus, MMIOState),
         VMSTATE_IDE_DRIVES(bus.ifs, MMIOState),
         VMSTATE_END_OF_LIST()
@@ -124,9 +123,9 @@ static void mmio_ide_realizefn(DeviceState *dev, Error **errp)
 
     ide_init2(&s->bus, s->irq);
 
-    memory_region_init_io(&s->iomem1, &mmio_ide_ops, s,
+    memory_region_init_io(&s->iomem1, OBJECT(s), &mmio_ide_ops, s,
                           "ide-mmio.1", 16 << s->shift);
-    memory_region_init_io(&s->iomem2, &mmio_ide_cs_ops, s,
+    memory_region_init_io(&s->iomem2, OBJECT(s), &mmio_ide_cs_ops, s,
                           "ide-mmio.2", 2 << s->shift);
     sysbus_init_mmio(d, &s->iomem1);
     sysbus_init_mmio(d, &s->iomem2);
@@ -137,7 +136,7 @@ static void mmio_ide_initfn(Object *obj)
     SysBusDevice *d = SYS_BUS_DEVICE(obj);
     MMIOState *s = MMIO_IDE(obj);
 
-    ide_bus_new(&s->bus, DEVICE(obj), 0, 2);
+    ide_bus_new(&s->bus, sizeof(s->bus), DEVICE(obj), 0, 2);
     sysbus_init_irq(d, &s->irq);
 }
 

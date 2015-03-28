@@ -29,6 +29,7 @@ int inet_aton(const char *cp, struct in_addr *ia);
 #include "qemu/option.h"
 #include "qapi/error.h"
 #include "qapi/qmp/qerror.h"
+#include "qapi-types.h"
 
 extern QemuOptsList socket_optslist;
 
@@ -39,13 +40,14 @@ int socket_set_cork(int fd, int v);
 int socket_set_nodelay(int fd);
 void qemu_set_block(int fd);
 void qemu_set_nonblock(int fd);
+int socket_set_fast_reuse(int fd);
 int send_all(int fd, const void *buf, int len1);
 int recv_all(int fd, void *buf, int len1, bool single_read);
 
 /* callback function for nonblocking connect
  * valid fd on success, negative error code on failure
  */
-typedef void NonBlockingConnectHandler(int fd, void *opaque);
+typedef void NonBlockingConnectHandler(int fd, Error *errp, void *opaque);
 
 InetSocketAddress *inet_parse(const char *str, Error **errp);
 int inet_listen_opts(QemuOpts *opts, int port_offset, Error **errp);
@@ -59,7 +61,7 @@ int inet_nonblocking_connect(const char *str,
                              void *opaque, Error **errp);
 
 int inet_dgram_opts(QemuOpts *opts, Error **errp);
-const char *inet_strfamily(int family);
+NetworkAddressFamily inet_netfamily(int family);
 
 int unix_listen_opts(QemuOpts *opts, Error **errp);
 int unix_listen(const char *path, char *ostr, int olen, Error **errp);

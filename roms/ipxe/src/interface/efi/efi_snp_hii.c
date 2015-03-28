@@ -59,11 +59,6 @@ FILE_LICENCE ( GPL2_OR_LATER );
 #include <ipxe/efi/efi_hii.h>
 #include <ipxe/efi/efi_snp.h>
 #include <ipxe/efi/efi_strings.h>
-#include <config/general.h>
-
-/** EFI configuration access protocol GUID */
-static EFI_GUID efi_hii_config_access_protocol_guid
-	= EFI_HII_CONFIG_ACCESS_PROTOCOL_GUID;
 
 /** EFI platform setup formset GUID */
 static EFI_GUID efi_hii_platform_setup_formset_guid
@@ -75,7 +70,7 @@ static EFI_GUID efi_hii_ibm_ucm_compliant_formset_guid
 
 /** EFI HII database protocol */
 static EFI_HII_DATABASE_PROTOCOL *efihii;
-EFI_REQUIRE_PROTOCOL ( EFI_HII_DATABASE_PROTOCOL, &efihii );
+EFI_REQUEST_PROTOCOL ( EFI_HII_DATABASE_PROTOCOL, &efihii );
 
 /**
  * Identify settings to be exposed via HII
@@ -126,6 +121,7 @@ static void efi_snp_hii_questions ( struct efi_snp_device *snpdev,
 				    struct efi_ifr_builder *ifr,
 				    unsigned int varstore_id ) {
 	struct setting *setting;
+	struct setting *previous = NULL;
 	unsigned int name_id;
 	unsigned int prompt_id;
 	unsigned int help_id;
@@ -135,6 +131,9 @@ static void efi_snp_hii_questions ( struct efi_snp_device *snpdev,
 	for_each_table_entry ( setting, SETTINGS ) {
 		if ( ! efi_snp_hii_setting_applies ( snpdev, setting ) )
 			continue;
+		if ( previous && ( setting_cmp ( setting, previous ) == 0 ) )
+			continue;
+		previous = setting;
 		name_id = efi_ifr_string ( ifr, "%s", setting->name );
 		prompt_id = efi_ifr_string ( ifr, "%s", setting->description );
 		help_id = efi_ifr_string ( ifr, "http://ipxe.org/cfg/%s",
@@ -158,7 +157,7 @@ efi_snp_hii_package_list ( struct efi_snp_device *snpdev ) {
 	struct device *dev = netdev->dev;
 	struct efi_ifr_builder ifr;
 	EFI_HII_PACKAGE_LIST_HEADER *package;
-	const char *product_name;
+	const char *name;
 	EFI_GUID package_guid;
 	EFI_GUID formset_guid;
 	EFI_GUID varstore_guid;
@@ -169,7 +168,7 @@ efi_snp_hii_package_list ( struct efi_snp_device *snpdev ) {
 	efi_ifr_init ( &ifr );
 
 	/* Determine product name */
-	product_name = ( PRODUCT_NAME[0] ? PRODUCT_NAME : PRODUCT_SHORT_NAME );
+	name = ( product_name[0] ? product_name : product_short_name );
 
 	/* Generate GUIDs */
 	efi_snp_hii_random_guid ( &package_guid );
@@ -177,13 +176,13 @@ efi_snp_hii_package_list ( struct efi_snp_device *snpdev ) {
 	efi_snp_hii_random_guid ( &varstore_guid );
 
 	/* Generate title string (used more than once) */
-	title_id = efi_ifr_string ( &ifr, "%s (%s)", product_name,
+	title_id = efi_ifr_string ( &ifr, "%s (%s)", name,
 				    netdev_addr ( netdev ) );
 
 	/* Generate opcodes */
 	efi_ifr_form_set_op ( &ifr, &formset_guid, title_id,
-			      efi_ifr_string ( &ifr,
-					       "Configure " PRODUCT_SHORT_NAME),
+			      efi_ifr_string ( &ifr, "Configure %s",
+					       product_short_name ),
 			      &efi_hii_platform_setup_formset_guid,
 			      &efi_hii_ibm_ucm_compliant_formset_guid, NULL );
 	efi_ifr_guid_class_op ( &ifr, EFI_NETWORK_DEVICE_CLASS );
@@ -193,7 +192,7 @@ efi_snp_hii_package_list ( struct efi_snp_device *snpdev ) {
 	efi_ifr_text_op ( &ifr,
 			  efi_ifr_string ( &ifr, "Name" ),
 			  efi_ifr_string ( &ifr, "Firmware product name" ),
-			  efi_ifr_string ( &ifr, "%s", product_name ) );
+			  efi_ifr_string ( &ifr, "%s", name ) );
 	efi_ifr_text_op ( &ifr,
 			  efi_ifr_string ( &ifr, "Version" ),
 			  efi_ifr_string ( &ifr, "Firmware version" ),
@@ -276,7 +275,9 @@ static int efi_snp_hii_fetch ( struct efi_snp_device *snpdev,
 			       const char *key, const char *value,
 			       wchar_t **results, int *have_setting ) {
 	struct settings *settings = efi_snp_hii_settings ( snpdev );
+	struct settings *origin;
 	struct setting *setting;
+	struct setting fetched;
 	int len;
 	char *buf;
 	char *encoded;
@@ -311,7 +312,8 @@ static int efi_snp_hii_fetch ( struct efi_snp_device *snpdev,
 	if ( setting_exists ( settings, setting ) ) {
 
 		/* Calculate formatted length */
-		len = fetchf_setting ( settings, setting, NULL, 0 );
+		len = fetchf_setting ( settings, setting, &origin, &fetched,
+				       NULL, 0 );
 		if ( len < 0 ) {
 			rc = len;
 			DBGC ( snpdev, "SNPDEV %p could not fetch %s: %s\n",
@@ -328,7 +330,8 @@ static int efi_snp_hii_fetch ( struct efi_snp_device *snpdev,
 		encoded = ( buf + len + 1 /* NUL */ );
 
 		/* Format value */
-		fetchf_setting ( settings, setting, buf, ( len + 1 /* NUL */ ));
+		fetchf_setting ( origin, &fetched, NULL, NULL, buf,
+				 ( len + 1 /* NUL */ ) );
 		for ( i = 0 ; i < len ; i++ ) {
 			sprintf ( ( encoded + ( 4 * i ) ), "%04x",
 				  *( ( uint8_t * ) buf + i ) );
@@ -544,7 +547,7 @@ efi_snp_hii_extract_config ( const EFI_HII_CONFIG_ACCESS_PROTOCOL *hii,
 		if ( ( rc = efi_snp_hii_process ( snpdev, pos, progress,
 						  results, &have_setting,
 						  efi_snp_hii_fetch ) ) != 0 ) {
-			return RC_TO_EFIRC ( rc );
+			return EFIRC ( rc );
 		}
 	}
 
@@ -558,7 +561,7 @@ efi_snp_hii_extract_config ( const EFI_HII_CONFIG_ACCESS_PROTOCOL *hii,
 			if ( ( rc = efi_snp_hii_fetch ( snpdev, setting->name,
 							NULL, results,
 							NULL ) ) != 0 ) {
-				return RC_TO_EFIRC ( rc );
+				return EFIRC ( rc );
 			}
 		}
 	}
@@ -592,7 +595,7 @@ efi_snp_hii_route_config ( const EFI_HII_CONFIG_ACCESS_PROTOCOL *hii,
 		if ( ( rc = efi_snp_hii_process ( snpdev, pos, progress,
 						  NULL, NULL,
 						  efi_snp_hii_store ) ) != 0 ) {
-			return RC_TO_EFIRC ( rc );
+			return EFIRC ( rc );
 		}
 	}
 
@@ -641,6 +644,12 @@ int efi_snp_hii_install ( struct efi_snp_device *snpdev ) {
 	int efirc;
 	int rc;
 
+	/* Do nothing if HII database protocol is not supported */
+	if ( ! efihii ) {
+		rc = -ENOTSUP;
+		goto err_no_hii;
+	}
+
 	/* Initialise HII protocol */
 	memcpy ( &snpdev->hii, &efi_snp_device_hii, sizeof ( snpdev->hii ) );
 
@@ -657,9 +666,9 @@ int efi_snp_hii_install ( struct efi_snp_device *snpdev ) {
 	if ( ( efirc = efihii->NewPackageList ( efihii, snpdev->package_list,
 						snpdev->handle,
 						&snpdev->hii_handle ) ) != 0 ) {
+		rc = -EEFI ( efirc );
 		DBGC ( snpdev, "SNPDEV %p could not add HII packages: %s\n",
-		       snpdev, efi_strerror ( efirc ) );
-		rc = EFIRC_TO_RC ( efirc );
+		       snpdev, strerror ( rc ) );
 		goto err_new_package_list;
 	}
 
@@ -668,9 +677,9 @@ int efi_snp_hii_install ( struct efi_snp_device *snpdev ) {
 			 &snpdev->handle,
 			 &efi_hii_config_access_protocol_guid, &snpdev->hii,
 			 NULL ) ) != 0 ) {
+		rc = -EEFI ( efirc );
 		DBGC ( snpdev, "SNPDEV %p could not install HII protocol: %s\n",
-		       snpdev, efi_strerror ( efirc ) );
-		rc = EFIRC_TO_RC ( efirc );
+		       snpdev, strerror ( rc ) );
 		goto err_install_protocol;
 	}
 
@@ -686,6 +695,7 @@ int efi_snp_hii_install ( struct efi_snp_device *snpdev ) {
 	free ( snpdev->package_list );
 	snpdev->package_list = NULL;
  err_build_package_list:
+ err_no_hii:
 	return rc;
 }
 
@@ -697,6 +707,11 @@ int efi_snp_hii_install ( struct efi_snp_device *snpdev ) {
 void efi_snp_hii_uninstall ( struct efi_snp_device *snpdev ) {
 	EFI_BOOT_SERVICES *bs = efi_systab->BootServices;
 
+	/* Do nothing if HII database protocol is not supported */
+	if ( ! efihii )
+		return;
+
+	/* Uninstall protocols and remove package list */
 	bs->UninstallMultipleProtocolInterfaces (
 			snpdev->handle,
 			&efi_hii_config_access_protocol_guid, &snpdev->hii,

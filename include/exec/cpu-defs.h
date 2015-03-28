@@ -24,11 +24,12 @@
 #endif
 
 #include "config.h"
-#include <setjmp.h>
 #include <inttypes.h>
 #include "qemu/osdep.h"
 #include "qemu/queue.h"
+#ifndef CONFIG_USER_ONLY
 #include "exec/hwaddr.h"
+#endif
 
 #ifndef TARGET_LONG_BITS
 #error TARGET_LONG_BITS must be defined before including this header
@@ -57,9 +58,7 @@ typedef uint64_t target_ulong;
 #define EXCP_HLT        0x10001 /* hlt instruction reached */
 #define EXCP_DEBUG      0x10002 /* cpu stopped after a breakpoint or singlestep */
 #define EXCP_HALTED     0x10003 /* cpu is halted (waiting for external event) */
-
-#define TB_JMP_CACHE_BITS 12
-#define TB_JMP_CACHE_SIZE (1 << TB_JMP_CACHE_BITS)
+#define EXCP_YIELD      0x10004 /* cpu wants to yield timeslice to another */
 
 /* Only the bottom TB_JMP_PAGE_BITS of the jump cache hash bits vary for
    addresses on the same page.  The top bits are the same.  This allows
@@ -72,6 +71,8 @@ typedef uint64_t target_ulong;
 #if !defined(CONFIG_USER_ONLY)
 #define CPU_TLB_BITS 8
 #define CPU_TLB_SIZE (1 << CPU_TLB_BITS)
+/* use a fully associative victim tlb of 8 entries */
+#define CPU_VTLB_SIZE 8
 
 #if HOST_LONG_BITS == 32 && TARGET_LONG_BITS == 32
 #define CPU_TLB_ENTRY_BITS 4
@@ -99,14 +100,17 @@ typedef struct CPUTLBEntry {
                    sizeof(uintptr_t))];
 } CPUTLBEntry;
 
-extern int CPUTLBEntry_wrong_size[sizeof(CPUTLBEntry) == (1 << CPU_TLB_ENTRY_BITS) ? 1 : -1];
+QEMU_BUILD_BUG_ON(sizeof(CPUTLBEntry) != (1 << CPU_TLB_ENTRY_BITS));
 
 #define CPU_COMMON_TLB \
     /* The meaning of the MMU modes is defined in the target code. */   \
     CPUTLBEntry tlb_table[NB_MMU_MODES][CPU_TLB_SIZE];                  \
-    hwaddr iotlb[NB_MMU_MODES][CPU_TLB_SIZE];               \
+    CPUTLBEntry tlb_v_table[NB_MMU_MODES][CPU_VTLB_SIZE];               \
+    hwaddr iotlb[NB_MMU_MODES][CPU_TLB_SIZE];                           \
+    hwaddr iotlb_v[NB_MMU_MODES][CPU_VTLB_SIZE];                        \
     target_ulong tlb_flush_addr;                                        \
-    target_ulong tlb_flush_mask;
+    target_ulong tlb_flush_mask;                                        \
+    target_ulong vtlb_index;                                            \
 
 #else
 
@@ -115,74 +119,9 @@ extern int CPUTLBEntry_wrong_size[sizeof(CPUTLBEntry) == (1 << CPU_TLB_ENTRY_BIT
 #endif
 
 
-#ifdef HOST_WORDS_BIGENDIAN
-typedef struct icount_decr_u16 {
-    uint16_t high;
-    uint16_t low;
-} icount_decr_u16;
-#else
-typedef struct icount_decr_u16 {
-    uint16_t low;
-    uint16_t high;
-} icount_decr_u16;
-#endif
-
-typedef struct CPUBreakpoint {
-    target_ulong pc;
-    int flags; /* BP_* */
-    QTAILQ_ENTRY(CPUBreakpoint) entry;
-} CPUBreakpoint;
-
-typedef struct CPUWatchpoint {
-    target_ulong vaddr;
-    target_ulong len_mask;
-    int flags; /* BP_* */
-    QTAILQ_ENTRY(CPUWatchpoint) entry;
-} CPUWatchpoint;
-
 #define CPU_TEMP_BUF_NLONGS 128
 #define CPU_COMMON                                                      \
     /* soft mmu support */                                              \
-    /* in order to avoid passing too many arguments to the MMIO         \
-       helpers, we store some rarely used information in the CPU        \
-       context) */                                                      \
-    uintptr_t mem_io_pc; /* host pc at which the memory was             \
-                            accessed */                                 \
-    target_ulong mem_io_vaddr; /* target virtual addr at which the      \
-                                     memory was accessed */             \
     CPU_COMMON_TLB                                                      \
-    struct TranslationBlock *tb_jmp_cache[TB_JMP_CACHE_SIZE];           \
-    /* buffer for temporaries in the code generator */                  \
-    long temp_buf[CPU_TEMP_BUF_NLONGS];                                 \
-                                                                        \
-    int64_t icount_extra; /* Instructions until next timer event.  */   \
-    /* Number of cycles left, with interrupt flag in high bit.          \
-       This allows a single read-compare-cbranch-write sequence to test \
-       for both decrementer underflow and exceptions.  */               \
-    union {                                                             \
-        uint32_t u32;                                                   \
-        icount_decr_u16 u16;                                            \
-    } icount_decr;                                                      \
-    uint32_t can_do_io; /* nonzero if memory mapped IO is safe.  */     \
-                                                                        \
-    /* from this point: preserved by CPU reset */                       \
-    /* ice debug support */                                             \
-    QTAILQ_HEAD(breakpoints_head, CPUBreakpoint) breakpoints;            \
-    int singlestep_enabled;                                             \
-                                                                        \
-    QTAILQ_HEAD(watchpoints_head, CPUWatchpoint) watchpoints;            \
-    CPUWatchpoint *watchpoint_hit;                                      \
-                                                                        \
-    struct GDBRegisterState *gdb_regs;                                  \
-                                                                        \
-    /* Core interrupt code */                                           \
-    sigjmp_buf jmp_env;                                                 \
-    int exception_index;                                                \
-                                                                        \
-    CPUArchState *next_cpu; /* next CPU sharing TB cache */                 \
-    /* user data */                                                     \
-    void *opaque;                                                       \
-                                                                        \
-    const char *cpu_model_str;
 
 #endif

@@ -95,6 +95,29 @@ print_character:
 	.size	print_character, . - print_character
 
 /*****************************************************************************
+ * Utility function: print space
+ *
+ * Parameters:
+ *   %ds:di : output buffer (or %di=0 to print to console)
+ * Returns:
+ *   %ds:di : next character in output buffer (if applicable)
+ *****************************************************************************
+ */
+	.section ".prefix.lib", "awx", @progbits
+	.code16
+	.globl	print_space
+print_space:
+	/* Preserve registers */
+	pushw	%ax
+	/* Print space */
+	movb	$( ' ' ), %al
+	call	print_character
+	/* Restore registers and return */
+	popw	%ax
+	ret
+	.size	print_space, . - print_space
+
+/*****************************************************************************
  * Utility function: print a NUL-terminated string
  *
  * Parameters:
@@ -231,12 +254,10 @@ print_kill_line:
 	movb	$( '\r' ), %al
 	call	print_character
 	/* Print 79 spaces */
-	movb	$( ' ' ), %al
 	movw	$79, %cx
-1:	call	print_character
+1:	call	print_space
 	loop	1b
 	/* Print CR */
-	movb	$( '\r' ), %al
 	call	print_character
 	/* Restore registers and return */
 	popw	%cx
@@ -522,8 +543,11 @@ alloc_basemem:
 	subw	$_data16_memsz_pgh, %ax
 	pushw	%ax
 
-	/* Calculate .text16 segment address */
+	/* Calculate .text16 segment address.  Round down to ensure
+	 * low bits are zero, to speed up mode transitions under KVM.
+	 */
 	subw	$_text16_memsz_pgh, %ax
+	andb	$~0x03, %al
 	pushw	%ax
 
 	/* Update FBMS */
@@ -545,8 +569,7 @@ alloc_basemem:
  * Free space allocated with alloc_basemem.
  *
  * Parameters:
- *   %ax : .text16 segment address
- *   %bx : .data16 segment address
+ *   none (.text16 segment address is implicit in %cs)
  * Returns:
  *   %ax : 0 if successfully freed
  * Corrupts:
@@ -559,14 +582,14 @@ alloc_basemem:
 free_basemem:
 	/* Preserve registers */
 	pushw	%fs
+	pushw	%ax
 
 	/* Check FBMS counter */
-	pushw	%ax
+	movw	%cs, %ax
 	shrw	$6, %ax
 	pushw	$0x40
 	popw	%fs
 	cmpw	%ax, %fs:0x13
-	popw	%ax
 	jne	1f
 
 	/* Check hooked interrupt count */
@@ -574,6 +597,7 @@ free_basemem:
 	jne	1f
 
 	/* OK to free memory */
+	movw	%cs, %ax
 	addw	$_text16_memsz_pgh, %ax
 	addw	$_data16_memsz_pgh, %ax
 	shrw	$6, %ax
@@ -581,6 +605,7 @@ free_basemem:
 	xorw	%ax, %ax
 
 1:	/* Restore registers and return */
+	popw	%ax
 	popw	%fs
 	ret
 	.size free_basemem, . - free_basemem
@@ -621,7 +646,7 @@ install:
 	/* Image destination = default */
 	xorl	%edi, %edi
 	/* Allow arbitrary relocation */
-	xorl	%ebp, %ebp
+	orl	$0xffffffff, %ebp
 	/* Install text and data segments */
 	call	install_prealloc
 	/* Restore registers and return */
@@ -641,7 +666,9 @@ install:
  *   %bx  : .data16 segment address
  *   %esi : Image source physical address (or zero for %cs:0000)
  *   %edi : Decompression temporary area physical address (or zero for default)
- *   %ebp : Maximum end address for relocation (or zero for no maximum)
+ *   %ebp : Maximum end address for relocation
+ *          - 0xffffffff for no maximum
+ *          - 0x00000000 to inhibit use of INT 15,e820 and INT 15,e801
  * Corrupts:
  *   none
  ****************************************************************************
@@ -719,9 +746,15 @@ a20_death_message:
 	xorw	%di, %di
 	movl	%esi, %eax
 	call	print_hex_dword
+	call	print_space
+	movl	%ecx, %eax
+	call	print_hex_dword
 	movw	$payload_death_message, %si
 	call	print_message
-2:	jmp	2b
+2:	/* Halt system */
+	cli
+	hlt
+	jmp	2b
 	.section ".prefix.data", "aw", @progbits
 payload_death_message:
 	.asciz	"\nPayload inaccessible - cannot continue\n"
@@ -794,6 +827,13 @@ payload_death_message:
 	progress "  init_librm\n"
 	movw	%ax, (init_librm_vector+2)
 	lcall	*init_librm_vector
+
+	/* Inhibit INT 15,e820 and INT 15,e801 if applicable */
+	testl	%ebp, %ebp
+	jnz	1f
+	incb	memmap_post
+	decl	%ebp
+1:
 
 	/* Call relocate() to determine target address for relocation.
 	 * relocate() will return with %esi, %edi and %ecx set up
@@ -872,8 +912,7 @@ close_payload:
  * Uninstall all text and data segments.
  *
  * Parameters:
- *   %ax  : .text16 segment address
- *   %bx  : .data16 segment address
+ *   none (.text16 segment address is implicit in %cs)
  * Returns:
  *   none
  * Corrupts:

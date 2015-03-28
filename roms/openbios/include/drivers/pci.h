@@ -13,7 +13,7 @@ struct pci_arch_t {
 	unsigned long cfg_data;
 	unsigned long cfg_base;
 	unsigned long cfg_len;
-	unsigned long host_mem_base; /* in host memory space */
+	unsigned long host_pci_base; /* offset of PCI memory space within host memory space */
 	unsigned long pci_mem_base; /* in PCI memory space */
 	unsigned long mem_len;
 	unsigned long io_base;
@@ -188,6 +188,7 @@ extern const pci_arch_t *arch;
 #define PCI_DEVICE_ID_APPLE_UNI_N_PCI    0x001f
 #define PCI_DEVICE_ID_APPLE_UNI_N_AGP    0x0020
 #define PCI_DEVICE_ID_APPLE_UNI_N_KEYL   0x0022
+#define PCI_DEVICE_ID_APPLE_KEYL_USB     0x003f
 #define PCI_DEVICE_ID_APPLE_U3_AGP       0x004b
 
 #define PCI_VENDOR_ID_SUN                0x108e
@@ -210,6 +211,7 @@ extern const pci_arch_t *arch;
 #define PCI_DEVICE_ID_VIRTIO_BLOCK       0x1001
 
 #define PCI_VENDOR_ID_INTEL              0x8086
+#define PCI_DEVICE_ID_INTEL_82378        0x0484
 #define PCI_DEVICE_ID_INTEL_82441        0x1237
 
 #endif	/* _H_PCI */

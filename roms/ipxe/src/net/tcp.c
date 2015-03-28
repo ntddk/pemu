@@ -15,6 +15,8 @@
 #include <ipxe/open.h>
 #include <ipxe/uri.h>
 #include <ipxe/netdevice.h>
+#include <ipxe/profile.h>
+#include <ipxe/process.h>
 #include <ipxe/tcpip.h>
 #include <ipxe/tcp.h>
 
@@ -43,6 +45,8 @@ struct tcp_connection {
 	struct sockaddr_tcpip peer;
 	/** Local port */
 	unsigned int local_port;
+	/** Maximum segment size */
+	size_t mss;
 
 	/** Current TCP state */
 	unsigned int tcp_state;
@@ -104,6 +108,8 @@ struct tcp_connection {
 	struct list_head tx_queue;
 	/** Receive queue */
 	struct list_head rx_queue;
+	/** Transmission process */
+	struct process process;
 	/** Retransmission timer */
 	struct retry_timer timer;
 	/** Shutdown (TIME_WAIT) timer */
@@ -153,10 +159,21 @@ struct tcp_rx_queued_header {
  */
 static LIST_HEAD ( tcp_conns );
 
+/** Transmit profiler */
+static struct profiler tcp_tx_profiler __profiler = { .name = "tcp.tx" };
+
+/** Receive profiler */
+static struct profiler tcp_rx_profiler __profiler = { .name = "tcp.rx" };
+
+/** Data transfer profiler */
+static struct profiler tcp_xfer_profiler __profiler = { .name = "tcp.xfer" };
+
 /* Forward declarations */
+static struct process_descriptor tcp_process_desc;
 static struct interface_descriptor tcp_xfer_desc;
 static void tcp_expired ( struct retry_timer *timer, int over );
 static void tcp_wait_expired ( struct retry_timer *timer, int over );
+static struct tcp_connection * tcp_demux ( unsigned int local_port );
 static int tcp_rx_ack ( struct tcp_connection *tcp, uint32_t ack,
 			uint32_t win );
 
@@ -226,46 +243,14 @@ tcp_dump_flags ( struct tcp_connection *tcp, unsigned int flags ) {
  */
 
 /**
- * Bind TCP connection to local port
+ * Check if local TCP port is available
  *
- * @v tcp		TCP connection
  * @v port		Local port number
- * @ret rc		Return status code
- *
- * If the port is 0, the connection is assigned an available port
- * between 1024 and 65535.
+ * @ret port		Local port number, or negative error
  */
-static int tcp_bind ( struct tcp_connection *tcp, unsigned int port ) {
-	struct tcp_connection *existing;
-	uint16_t try_port;
-	unsigned int i;
+static int tcp_port_available ( int port ) {
 
-	/* If no port is specified, find an available port */
-	if ( ! port ) {
-		try_port = random();
-		for ( i = 0 ; i < 65536 ; i++ ) {
-			try_port++;
-			if ( try_port < 1024 )
-				continue;
-			if ( tcp_bind ( tcp, try_port ) == 0 )
-				return 0;
-		}
-		DBGC ( tcp, "TCP %p could not bind: no free ports\n", tcp );
-		return -EADDRINUSE;
-	}
-
-	/* Attempt bind to local port */
-	list_for_each_entry ( existing, &tcp_conns, list ) {
-		if ( existing->local_port == port ) {
-			DBGC ( tcp, "TCP %p could not bind: port %d in use\n",
-			       tcp, port );
-			return -EADDRINUSE;
-		}
-	}
-	tcp->local_port = port;
-
-	DBGC ( tcp, "TCP %p bound to port %d\n", tcp, port );
-	return 0;
+	return ( tcp_demux ( port ) ? -EADDRINUSE : port );
 }
 
 /**
@@ -281,7 +266,8 @@ static int tcp_open ( struct interface *xfer, struct sockaddr *peer,
 	struct sockaddr_tcpip *st_peer = ( struct sockaddr_tcpip * ) peer;
 	struct sockaddr_tcpip *st_local = ( struct sockaddr_tcpip * ) local;
 	struct tcp_connection *tcp;
-	unsigned int bind_port;
+	size_t mtu;
+	int port;
 	int rc;
 
 	/* Allocate and initialise structure */
@@ -291,6 +277,7 @@ static int tcp_open ( struct interface *xfer, struct sockaddr *peer,
 	DBGC ( tcp, "TCP %p allocated\n", tcp );
 	ref_init ( &tcp->refcnt, NULL );
 	intf_init ( &tcp->xfer, &tcp_xfer_desc, &tcp->refcnt );
+	process_init_stopped ( &tcp->process, &tcp_process_desc, &tcp->refcnt );
 	timer_init ( &tcp->timer, tcp_expired, &tcp->refcnt );
 	timer_init ( &tcp->wait, tcp_wait_expired, &tcp->refcnt );
 	tcp->prev_tcp_state = TCP_CLOSED;
@@ -302,10 +289,26 @@ static int tcp_open ( struct interface *xfer, struct sockaddr *peer,
 	INIT_LIST_HEAD ( &tcp->rx_queue );
 	memcpy ( &tcp->peer, st_peer, sizeof ( tcp->peer ) );
 
-	/* Bind to local port */
-	bind_port = ( st_local ? ntohs ( st_local->st_port ) : 0 );
-	if ( ( rc = tcp_bind ( tcp, bind_port ) ) != 0 )
+	/* Calculate MSS */
+	mtu = tcpip_mtu ( &tcp->peer );
+	if ( ! mtu ) {
+		DBGC ( tcp, "TCP %p has no route to %s\n",
+		       tcp, sock_ntoa ( peer ) );
+		rc = -ENETUNREACH;
 		goto err;
+	}
+	tcp->mss = ( mtu - sizeof ( struct tcp_header ) );
+
+	/* Bind to local port */
+	port = tcpip_bind ( st_local, tcp_port_available );
+	if ( port < 0 ) {
+		rc = port;
+		DBGC ( tcp, "TCP %p could not bind: %s\n",
+		       tcp, strerror ( rc ) );
+		goto err;
+	}
+	tcp->local_port = port;
+	DBGC ( tcp, "TCP %p bound to port %d\n", tcp, tcp->local_port );
 
 	/* Start timer to initiate SYN */
 	start_timer_nodelay ( &tcp->timer );
@@ -371,6 +374,7 @@ static void tcp_close ( struct tcp_connection *tcp, int rc ) {
 		pending_put ( &tcp->pending_flags );
 
 		/* Remove from list and drop reference */
+		process_del ( &tcp->process );
 		stop_timer ( &tcp->timer );
 		stop_timer ( &tcp->wait );
 		list_del ( &tcp->list );
@@ -499,7 +503,7 @@ static size_t tcp_process_tx_queue ( struct tcp_connection *tcp, size_t max_len,
  * will have been started if necessary, and so the stack will
  * eventually attempt to retransmit the failed packet.
  */
-static int tcp_xmit ( struct tcp_connection *tcp ) {
+static void tcp_xmit ( struct tcp_connection *tcp ) {
 	struct io_buffer *iobuf;
 	struct tcp_header *tcphdr;
 	struct tcp_mss_option *mssopt;
@@ -514,9 +518,12 @@ static int tcp_xmit ( struct tcp_connection *tcp ) {
 	uint32_t max_representable_win;
 	int rc;
 
+	/* Start profiling */
+	profile_start ( &tcp_tx_profiler );
+
 	/* If retransmission timer is already running, do nothing */
 	if ( timer_running ( &tcp->timer ) )
-		return 0;
+		return;
 
 	/* Calculate both the actual (payload) and sequence space
 	 * lengths that we wish to transmit.
@@ -536,7 +543,7 @@ static int tcp_xmit ( struct tcp_connection *tcp ) {
 
 	/* If we have nothing to transmit, stop now */
 	if ( ( seq_len == 0 ) && ! ( tcp->flags & TCP_ACK_PENDING ) )
-		return 0;
+		return;
 
 	/* If we are transmitting anything that requires
 	 * acknowledgement (i.e. consumes sequence space), start the
@@ -552,7 +559,7 @@ static int tcp_xmit ( struct tcp_connection *tcp ) {
 		DBGC ( tcp, "TCP %p could not allocate iobuf for %08x..%08x "
 		       "%08x\n", tcp, tcp->snd_seq, ( tcp->snd_seq + seq_len ),
 		       tcp->rcv_ack );
-		return -ENOMEM;
+		return;
 	}
 	iob_reserve ( iobuf, TCP_MAX_HEADER_LEN );
 
@@ -577,7 +584,7 @@ static int tcp_xmit ( struct tcp_connection *tcp ) {
 		mssopt = iob_push ( iobuf, sizeof ( *mssopt ) );
 		mssopt->kind = TCP_OPTION_MSS;
 		mssopt->length = sizeof ( *mssopt );
-		mssopt->mss = htons ( TCP_MSS );
+		mssopt->mss = htons ( tcp->mss );
 		wsopt = iob_push ( iobuf, sizeof ( *wsopt ) );
 		wsopt->nop = TCP_OPTION_NOP;
 		wsopt->wsopt.kind = TCP_OPTION_WS;
@@ -619,14 +626,18 @@ static int tcp_xmit ( struct tcp_connection *tcp ) {
 		DBGC ( tcp, "TCP %p could not transmit %08x..%08x %08x: %s\n",
 		       tcp, tcp->snd_seq, ( tcp->snd_seq + tcp->snd_sent ),
 		       tcp->rcv_ack, strerror ( rc ) );
-		return rc;
+		return;
 	}
 
 	/* Clear ACK-pending flag */
 	tcp->flags &= ~TCP_ACK_PENDING;
 
-	return 0;
+	profile_stop ( &tcp_tx_profiler );
 }
+
+/** TCP process descriptor */
+static struct process_descriptor tcp_process_desc =
+	PROC_DESC_ONCE ( struct tcp_connection, process, tcp_xmit );
 
 /**
  * Retransmission timer expired
@@ -902,6 +913,9 @@ static int tcp_rx_ack ( struct tcp_connection *tcp, uint32_t ack,
 		}
 	}
 
+	/* Update window size */
+	tcp->snd_win = win;
+
 	/* Ignore ACKs that don't actually acknowledge any new data.
 	 * (In particular, do not stop the retransmission timer; this
 	 * avoids creating a sorceror's apprentice syndrome when a
@@ -923,10 +937,9 @@ static int tcp_rx_ack ( struct tcp_connection *tcp, uint32_t ack,
 		pending_put ( &tcp->pending_flags );
 	}
 
-	/* Update SEQ and sent counters, and window size */
+	/* Update SEQ and sent counters */
 	tcp->snd_seq = ack;
 	tcp->snd_sent = 0;
-	tcp->snd_win = win;
 
 	/* Remove any acknowledged data from transmit queue */
 	tcp_process_tx_queue ( tcp, len, NULL, 1 );
@@ -976,11 +989,13 @@ static int tcp_rx_data ( struct tcp_connection *tcp, uint32_t seq,
 	tcp_rx_seq ( tcp, len );
 
 	/* Deliver data to application */
+	profile_start ( &tcp_xfer_profiler );
 	if ( ( rc = xfer_deliver_iob ( &tcp->xfer, iobuf ) ) != 0 ) {
 		DBGC ( tcp, "TCP %p could not deliver %08x..%08x: %s\n",
 		       tcp, seq, ( seq + len ), strerror ( rc ) );
 		return rc;
 	}
+	profile_stop ( &tcp_xfer_profiler );
 
 	return 0;
 }
@@ -1140,12 +1155,14 @@ static void tcp_process_rx_queue ( struct tcp_connection *tcp ) {
  * Process received packet
  *
  * @v iobuf		I/O buffer
+ * @v netdev		Network device
  * @v st_src		Partially-filled source address
  * @v st_dest		Partially-filled destination address
  * @v pshdr_csum	Pseudo-header checksum
  * @ret rc		Return status code
   */
 static int tcp_rx ( struct io_buffer *iobuf,
+		    struct net_device *netdev __unused,
 		    struct sockaddr_tcpip *st_src,
 		    struct sockaddr_tcpip *st_dest __unused,
 		    uint16_t pshdr_csum ) {
@@ -1163,6 +1180,9 @@ static int tcp_rx ( struct io_buffer *iobuf,
 	uint32_t seq_len;
 	size_t old_xfer_window;
 	int rc;
+
+	/* Start profiling */
+	profile_start ( &tcp_rx_profiler );
 
 	/* Sanity check packet */
 	if ( iob_len ( iobuf ) < sizeof ( *tcphdr ) ) {
@@ -1216,9 +1236,8 @@ static int tcp_rx ( struct io_buffer *iobuf,
 	tcp_dump_flags ( tcp, tcphdr->flags );
 	DBGC2 ( tcp, "\n" );
 
-	/* If no connection was found, send RST */
+	/* If no connection was found, silently drop packet */
 	if ( ! tcp ) {
-		tcp_xmit_reset ( tcp, st_src, tcphdr );
 		rc = -ENOTCONN;
 		goto discard;
 	}
@@ -1262,8 +1281,16 @@ static int tcp_rx ( struct io_buffer *iobuf,
 	/* Dump out any state change as a result of the received packet */
 	tcp_dump_state ( tcp );
 
-	/* Send out any pending data */
-	tcp_xmit ( tcp );
+	/* Schedule transmission of ACK (and any pending data).  If we
+	 * have received any out-of-order packets (i.e. if the receive
+	 * queue remains non-empty after processing) then send the ACK
+	 * immediately in order to trigger Fast Retransmission.
+	 */
+	if ( list_empty ( &tcp->rx_queue ) ) {
+		process_add ( &tcp->process );
+	} else {
+		tcp_xmit ( tcp );
+	}
 
 	/* If this packet was the last we expect to receive, set up
 	 * timer to expire and cause the connection to be freed.
@@ -1277,6 +1304,7 @@ static int tcp_rx ( struct io_buffer *iobuf,
 	if ( tcp_xfer_window ( tcp ) != old_xfer_window )
 		xfer_window_changed ( &tcp->xfer );
 
+	profile_stop ( &tcp_rx_profiler );
 	return 0;
 
  discard:
@@ -1420,10 +1448,17 @@ static struct interface_descriptor tcp_xfer_desc =
  ***************************************************************************
  */
 
-/** TCP socket opener */
-struct socket_opener tcp_socket_opener __socket_opener = {
+/** TCP IPv4 socket opener */
+struct socket_opener tcp_ipv4_socket_opener __socket_opener = {
 	.semantics	= TCP_SOCK_STREAM,
 	.family		= AF_INET,
+	.open		= tcp_open,
+};
+
+/** TCP IPv6 socket opener */
+struct socket_opener tcp_ipv6_socket_opener __socket_opener = {
+	.semantics	= TCP_SOCK_STREAM,
+	.family		= AF_INET6,
 	.open		= tcp_open,
 };
 

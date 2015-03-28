@@ -10,6 +10,7 @@
 #include "qemu/timer.h"
 #include "hw/ptimer.h"
 #include "sysemu/sysemu.h"
+#include "sysemu/qtest.h"
 #include "net/net.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
@@ -172,14 +173,14 @@ static void mcf5208_sys_init(MemoryRegion *address_space, qemu_irq *pic)
     int i;
 
     /* SDRAMC.  */
-    memory_region_init_io(iomem, &m5208_sys_ops, NULL, "m5208-sys", 0x00004000);
+    memory_region_init_io(iomem, NULL, &m5208_sys_ops, NULL, "m5208-sys", 0x00004000);
     memory_region_add_subregion(address_space, 0xfc0a8000, iomem);
     /* Timers.  */
     for (i = 0; i < 2; i++) {
         s = (m5208_timer_state *)g_malloc0(sizeof(m5208_timer_state));
         bh = qemu_bh_new(m5208_timer_trigger, s);
         s->timer = ptimer_init(bh);
-        memory_region_init_io(&s->iomem, &m5208_timer_ops, s,
+        memory_region_init_io(&s->iomem, NULL, &m5208_timer_ops, s,
                               "m5208-timer", 0x00004000);
         memory_region_add_subregion(address_space, 0xfc080000 + 0x4000 * i,
                                     &s->iomem);
@@ -187,11 +188,11 @@ static void mcf5208_sys_init(MemoryRegion *address_space, qemu_irq *pic)
     }
 }
 
-static void mcf5208evb_init(QEMUMachineInitArgs *args)
+static void mcf5208evb_init(MachineState *machine)
 {
-    ram_addr_t ram_size = args->ram_size;
-    const char *cpu_model = args->cpu_model;
-    const char *kernel_filename = args->kernel_filename;
+    ram_addr_t ram_size = machine->ram_size;
+    const char *cpu_model = machine->cpu_model;
+    const char *kernel_filename = machine->kernel_filename;
     M68kCPU *cpu;
     CPUM68KState *env;
     int kernel_size;
@@ -217,12 +218,12 @@ static void mcf5208evb_init(QEMUMachineInitArgs *args)
     /* TODO: Configure BARs.  */
 
     /* DRAM at 0x40000000 */
-    memory_region_init_ram(ram, "mcf5208.ram", ram_size);
+    memory_region_init_ram(ram, NULL, "mcf5208.ram", ram_size, &error_abort);
     vmstate_register_ram_global(ram);
     memory_region_add_subregion(address_space_mem, 0x40000000, ram);
 
     /* Internal SRAM.  */
-    memory_region_init_ram(sram, "mcf5208.sram", 16384);
+    memory_region_init_ram(sram, NULL, "mcf5208.sram", 16384, &error_abort);
     vmstate_register_ram_global(sram);
     memory_region_add_subregion(address_space_mem, 0x80000000, sram);
 
@@ -267,6 +268,9 @@ static void mcf5208evb_init(QEMUMachineInitArgs *args)
 
     /* Load kernel.  */
     if (!kernel_filename) {
+        if (qtest_enabled()) {
+            return;
+        }
         fprintf(stderr, "Kernel image must be specified\n");
         exit(1);
     }
@@ -275,7 +279,8 @@ static void mcf5208evb_init(QEMUMachineInitArgs *args)
                            NULL, NULL, 1, ELF_MACHINE, 0);
     entry = elf_entry;
     if (kernel_size < 0) {
-        kernel_size = load_uimage(kernel_filename, &entry, NULL, NULL);
+        kernel_size = load_uimage(kernel_filename, &entry, NULL, NULL,
+                                  NULL, NULL);
     }
     if (kernel_size < 0) {
         kernel_size = load_image_targphys(kernel_filename, 0x40000000,
@@ -295,7 +300,6 @@ static QEMUMachine mcf5208evb_machine = {
     .desc = "MCF5206EVB",
     .init = mcf5208evb_init,
     .is_default = 1,
-    DEFAULT_MACHINE_OPTIONS,
 };
 
 static void mcf5208evb_machine_init(void)

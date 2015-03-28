@@ -11,68 +11,26 @@
 #include "openbios.h"
 #include "libopenbios/console.h"
 #include "libopenbios/ofmem.h"
-
-void cls(void);
+#include "libopenbios/video.h"
 
 #ifdef CONFIG_DEBUG_CONSOLE
-
-/* ******************************************************************
- *          simple polling video/keyboard console functions
- * ****************************************************************** */
-
-#ifdef CONFIG_DEBUG_CONSOLE_VIDEO
-
-#define VMEM_BASE 0x00800000ULL
-#define VMEM_SIZE (1024*768*1)
-#define DAC_BASE  0x00200000ULL
-#define DAC_SIZE  16
-
-unsigned char *vmem;
-volatile uint32_t *dac;
-
-static void video_putchar(int c)
-{
-    char buf;
-
-    buf = c & 0xff;
-
-    console_draw_fstr(&buf, 1);
-}
-
-static void video_cls(void)
-{
-    memset((void *)vmem, 0, VMEM_SIZE);
-}
-
-void tcx_init(uint64_t base)
-{
-    vmem = (unsigned char *)ofmem_map_io(base + VMEM_BASE, VMEM_SIZE);
-    dac = (uint32_t *)ofmem_map_io(base + DAC_BASE, DAC_SIZE);
-
-    console_init();
-}
-
-#endif
 
 /* ******************************************************************
  *      common functions, implementing simple concurrent console
  * ****************************************************************** */
 
-int putchar(int c)
+static int arch_putchar(int c)
 {
 #ifdef CONFIG_DEBUG_CONSOLE_SERIAL
-	serial_putchar(c);
-#endif
-#ifdef CONFIG_DEBUG_CONSOLE_VIDEO
-	video_putchar(c);
+	escc_uart_putchar(c);
 #endif
 	return c;
 }
 
-int availchar(void)
+static int arch_availchar(void)
 {
 #ifdef CONFIG_DEBUG_CONSOLE_SERIAL
-	if (uart_charav(CONFIG_SERIAL_PORT))
+	if (escc_uart_charav(CONFIG_SERIAL_PORT))
 		return 1;
 #endif
 #ifdef CONFIG_DEBUG_CONSOLE_VIDEO
@@ -82,11 +40,11 @@ int availchar(void)
 	return 0;
 }
 
-int getchar(void)
+static int arch_getchar(void)
 {
 #ifdef CONFIG_DEBUG_CONSOLE_SERIAL
-	if (uart_charav(CONFIG_SERIAL_PORT))
-		return (uart_getchar(CONFIG_SERIAL_PORT));
+	if (escc_uart_charav(CONFIG_SERIAL_PORT))
+		return (escc_uart_getchar(CONFIG_SERIAL_PORT));
 #endif
 #ifdef CONFIG_DEBUG_CONSOLE_VIDEO
 	if (keyboard_dataready())
@@ -95,15 +53,10 @@ int getchar(void)
 	return 0;
 }
 
-void cls(void)
-{
-#ifdef CONFIG_DEBUG_CONSOLE_SERIAL
-	serial_cls();
-#endif
-#ifdef CONFIG_DEBUG_CONSOLE_VIDEO
-	video_cls();
-#endif
-}
-
+struct _console_ops arch_console_ops = {
+	.putchar = arch_putchar,
+	.availchar = arch_availchar,
+	.getchar = arch_getchar
+};
 
 #endif				// CONFIG_DEBUG_CONSOLE

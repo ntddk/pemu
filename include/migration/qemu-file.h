@@ -23,6 +23,9 @@
  */
 #ifndef QEMU_FILE_H
 #define QEMU_FILE_H 1
+#include "exec/cpu-common.h"
+
+#include <stdint.h>
 
 /* This function writes a chunk of data to a file at the given position.
  * The pos argument can be ignored if the file is only being used for
@@ -57,19 +60,55 @@ typedef int (QEMUFileGetFD)(void *opaque);
 typedef ssize_t (QEMUFileWritevBufferFunc)(void *opaque, struct iovec *iov,
                                            int iovcnt, int64_t pos);
 
+/*
+ * This function provides hooks around different
+ * stages of RAM migration.
+ */
+typedef int (QEMURamHookFunc)(QEMUFile *f, void *opaque, uint64_t flags);
+
+/*
+ * Constants used by ram_control_* hooks
+ */
+#define RAM_CONTROL_SETUP    0
+#define RAM_CONTROL_ROUND    1
+#define RAM_CONTROL_HOOK     2
+#define RAM_CONTROL_FINISH   3
+
+/*
+ * This function allows override of where the RAM page
+ * is saved (such as RDMA, for example.)
+ */
+typedef size_t (QEMURamSaveFunc)(QEMUFile *f, void *opaque,
+                               ram_addr_t block_offset,
+                               ram_addr_t offset,
+                               size_t size,
+                               int *bytes_sent);
+
 typedef struct QEMUFileOps {
     QEMUFilePutBufferFunc *put_buffer;
     QEMUFileGetBufferFunc *get_buffer;
     QEMUFileCloseFunc *close;
     QEMUFileGetFD *get_fd;
     QEMUFileWritevBufferFunc *writev_buffer;
+    QEMURamHookFunc *before_ram_iterate;
+    QEMURamHookFunc *after_ram_iterate;
+    QEMURamHookFunc *hook_ram_load;
+    QEMURamSaveFunc *save_page;
 } QEMUFileOps;
+
+struct QEMUSizedBuffer {
+    struct iovec *iov;
+    size_t n_iov;
+    size_t size; /* total allocated size in all iov's */
+    size_t used; /* number of used bytes */
+};
 
 QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops);
 QEMUFile *qemu_fopen(const char *filename, const char *mode);
 QEMUFile *qemu_fdopen(int fd, const char *mode);
 QEMUFile *qemu_fopen_socket(int fd, const char *mode);
 QEMUFile *qemu_popen_cmd(const char *command, const char *mode);
+QEMUFile *qemu_bufopen(const char *mode, QEMUSizedBuffer *input);
 int qemu_get_fd(QEMUFile *f);
 int qemu_fclose(QEMUFile *f);
 int64_t qemu_ftell(QEMUFile *f);
@@ -80,6 +119,24 @@ void qemu_put_byte(QEMUFile *f, int v);
  * The buffer should be available till it is sent asynchronously.
  */
 void qemu_put_buffer_async(QEMUFile *f, const uint8_t *buf, int size);
+bool qemu_file_mode_is_not_valid(const char *mode);
+bool qemu_file_is_writable(QEMUFile *f);
+
+QEMUSizedBuffer *qsb_create(const uint8_t *buffer, size_t len);
+QEMUSizedBuffer *qsb_clone(const QEMUSizedBuffer *);
+void qsb_free(QEMUSizedBuffer *);
+size_t qsb_set_length(QEMUSizedBuffer *qsb, size_t length);
+size_t qsb_get_length(const QEMUSizedBuffer *qsb);
+ssize_t qsb_get_buffer(const QEMUSizedBuffer *, off_t start, size_t count,
+                       uint8_t *buf);
+ssize_t qsb_write_at(QEMUSizedBuffer *qsb, const uint8_t *buf,
+                     off_t pos, size_t count);
+
+
+/*
+ * For use on files opened with qemu_bufopen
+ */
+const QEMUSizedBuffer *qemu_buf_get(QEMUFile *f);
 
 static inline void qemu_put_ubyte(QEMUFile *f, unsigned int v)
 {
@@ -91,8 +148,17 @@ static inline void qemu_put_ubyte(QEMUFile *f, unsigned int v)
 void qemu_put_be16(QEMUFile *f, unsigned int v);
 void qemu_put_be32(QEMUFile *f, unsigned int v);
 void qemu_put_be64(QEMUFile *f, uint64_t v);
+int qemu_peek_buffer(QEMUFile *f, uint8_t *buf, int size, size_t offset);
 int qemu_get_buffer(QEMUFile *f, uint8_t *buf, int size);
+/*
+ * Note that you can only peek continuous bytes from where the current pointer
+ * is; you aren't guaranteed to be able to peak to +n bytes unless you've
+ * previously peeked +n-1.
+ */
+int qemu_peek_byte(QEMUFile *f, int offset);
 int qemu_get_byte(QEMUFile *f);
+void qemu_file_skip(QEMUFile *f, int size);
+void qemu_update_position(QEMUFile *f, size_t size);
 
 static inline unsigned int qemu_get_ubyte(QEMUFile *f)
 {
@@ -110,6 +176,8 @@ void qemu_file_reset_rate_limit(QEMUFile *f);
 void qemu_file_set_rate_limit(QEMUFile *f, int64_t new_rate);
 int64_t qemu_file_get_rate_limit(QEMUFile *f);
 int qemu_file_get_error(QEMUFile *f);
+void qemu_file_set_error(QEMUFile *f, int ret);
+void qemu_fflush(QEMUFile *f);
 
 static inline void qemu_put_be64s(QEMUFile *f, const uint64_t *pv)
 {

@@ -21,13 +21,14 @@
 
 #include "sysemu/tpm_backend.h"
 #include "tpm_int.h"
-#include "block/block.h"
+#include "sysemu/block-backend.h"
 #include "exec/address-spaces.h"
 #include "hw/hw.h"
 #include "hw/i386/pc.h"
 #include "hw/pci/pci_ids.h"
 #include "tpm_tis.h"
 #include "qemu-common.h"
+#include "qemu/main-loop.h"
 
 /*#define DEBUG_TIS */
 
@@ -888,18 +889,11 @@ static void tpm_tis_initfn(Object *obj)
     ISADevice *dev = ISA_DEVICE(obj);
     TPMState *s = TPM(obj);
 
-    memory_region_init_io(&s->mmio, &tpm_tis_memory_ops, s, "tpm-tis-mmio",
+    memory_region_init_io(&s->mmio, OBJECT(s), &tpm_tis_memory_ops,
+                          s, "tpm-tis-mmio",
                           TPM_TIS_NUM_LOCALITIES << TPM_TIS_LOCALITY_SHIFT);
     memory_region_add_subregion(isa_address_space(dev), TPM_TIS_ADDR_BASE,
                                 &s->mmio);
-}
-
-static void tpm_tis_uninitfn(Object *obj)
-{
-    TPMState *s = TPM(obj);
-
-    memory_region_del_subregion(get_system_memory(), &s->mmio);
-    memory_region_destroy(&s->mmio);
 }
 
 static void tpm_tis_class_init(ObjectClass *klass, void *data)
@@ -917,7 +911,6 @@ static const TypeInfo tpm_tis_info = {
     .parent = TYPE_ISA_DEVICE,
     .instance_size = sizeof(TPMState),
     .instance_init = tpm_tis_initfn,
-    .instance_finalize = tpm_tis_uninitfn,
     .class_init  = tpm_tis_class_init,
 };
 

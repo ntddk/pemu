@@ -48,15 +48,31 @@ Qcow2Cache *qcow2_cache_create(BlockDriverState *bs, int num_tables)
     Qcow2Cache *c;
     int i;
 
-    c = g_malloc0(sizeof(*c));
+    c = g_new0(Qcow2Cache, 1);
     c->size = num_tables;
-    c->entries = g_malloc0(sizeof(*c->entries) * num_tables);
+    c->entries = g_try_new0(Qcow2CachedTable, num_tables);
+    if (!c->entries) {
+        goto fail;
+    }
 
     for (i = 0; i < c->size; i++) {
-        c->entries[i].table = qemu_blockalign(bs, s->cluster_size);
+        c->entries[i].table = qemu_try_blockalign(bs->file, s->cluster_size);
+        if (c->entries[i].table == NULL) {
+            goto fail;
+        }
     }
 
     return c;
+
+fail:
+    if (c->entries) {
+        for (i = 0; i < c->size; i++) {
+            qemu_vfree(c->entries[i].table);
+        }
+    }
+    g_free(c->entries);
+    g_free(c);
+    return NULL;
 }
 
 int qcow2_cache_destroy(BlockDriverState* bs, Qcow2Cache *c)
@@ -108,6 +124,21 @@ static int qcow2_cache_entry_flush(BlockDriverState *bs, Qcow2Cache *c, int i)
         if (ret >= 0) {
             c->depends_on_flush = false;
         }
+    }
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (c == s->refcount_block_cache) {
+        ret = qcow2_pre_write_overlap_check(bs, QCOW2_OL_REFCOUNT_BLOCK,
+                c->entries[i].offset, s->cluster_size);
+    } else if (c == s->l2_table_cache) {
+        ret = qcow2_pre_write_overlap_check(bs, QCOW2_OL_ACTIVE_L2,
+                c->entries[i].offset, s->cluster_size);
+    } else {
+        ret = qcow2_pre_write_overlap_check(bs, 0,
+                c->entries[i].offset, s->cluster_size);
     }
 
     if (ret < 0) {
@@ -183,6 +214,24 @@ int qcow2_cache_set_dependency(BlockDriverState *bs, Qcow2Cache *c,
 void qcow2_cache_depends_on_flush(Qcow2Cache *c)
 {
     c->depends_on_flush = true;
+}
+
+int qcow2_cache_empty(BlockDriverState *bs, Qcow2Cache *c)
+{
+    int ret, i;
+
+    ret = qcow2_cache_flush(bs, c);
+    if (ret < 0) {
+        return ret;
+    }
+
+    for (i = 0; i < c->size; i++) {
+        assert(c->entries[i].ref == 0);
+        c->entries[i].offset = 0;
+        c->entries[i].cache_hits = 0;
+    }
+
+    return 0;
 }
 
 static int qcow2_cache_find_entry_to_replace(Qcow2Cache *c)

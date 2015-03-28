@@ -280,10 +280,10 @@ int msix_init(struct PCIDevice *dev, unsigned short nentries,
 
     msix_mask_all(dev, nentries);
 
-    memory_region_init_io(&dev->msix_table_mmio, &msix_table_mmio_ops, dev,
+    memory_region_init_io(&dev->msix_table_mmio, OBJECT(dev), &msix_table_mmio_ops, dev,
                           "msix-table", table_size);
     memory_region_add_subregion(table_bar, table_offset, &dev->msix_table_mmio);
-    memory_region_init_io(&dev->msix_pba_mmio, &msix_pba_mmio_ops, dev,
+    memory_region_init_io(&dev->msix_pba_mmio, OBJECT(dev), &msix_pba_mmio_ops, dev,
                           "msix-pba", pba_size);
     memory_region_add_subregion(pba_bar, pba_offset, &dev->msix_pba_mmio);
 
@@ -311,7 +311,7 @@ int msix_init_exclusive_bar(PCIDevice *dev, unsigned short nentries,
     }
 
     name = g_strdup_printf("%s-msix", dev->name);
-    memory_region_init(&dev->msix_exclusive_bar, name, MSIX_EXCLUSIVE_BAR_SIZE);
+    memory_region_init(&dev->msix_exclusive_bar, OBJECT(dev), name, MSIX_EXCLUSIVE_BAR_SIZE);
     g_free(name);
 
     ret = msix_init(dev, nentries, &dev->msix_exclusive_bar, bar_nr,
@@ -319,7 +319,6 @@ int msix_init_exclusive_bar(PCIDevice *dev, unsigned short nentries,
                     bar_nr, MSIX_EXCLUSIVE_BAR_PBA_OFFSET,
                     MSIX_EXCLUSIVE_CAP_OFFSET);
     if (ret) {
-        memory_region_destroy(&dev->msix_exclusive_bar);
         return ret;
     }
 
@@ -359,11 +358,9 @@ void msix_uninit(PCIDevice *dev, MemoryRegion *table_bar, MemoryRegion *pba_bar)
     msix_free_irq_entries(dev);
     dev->msix_entries_nr = 0;
     memory_region_del_subregion(pba_bar, &dev->msix_pba_mmio);
-    memory_region_destroy(&dev->msix_pba_mmio);
     g_free(dev->msix_pba);
     dev->msix_pba = NULL;
     memory_region_del_subregion(table_bar, &dev->msix_table_mmio);
-    memory_region_destroy(&dev->msix_table_mmio);
     g_free(dev->msix_table);
     dev->msix_table = NULL;
     g_free(dev->msix_entry_used);
@@ -375,7 +372,6 @@ void msix_uninit_exclusive_bar(PCIDevice *dev)
 {
     if (msix_present(dev)) {
         msix_uninit(dev, &dev->msix_exclusive_bar, &dev->msix_exclusive_bar);
-        memory_region_destroy(&dev->msix_exclusive_bar);
     }
 }
 
@@ -439,7 +435,7 @@ void msix_notify(PCIDevice *dev, unsigned vector)
 
     msg = msix_get_message(dev, vector);
 
-    stl_le_phys(msg.address, msg.data);
+    stl_le_phys(&dev->bus_master_as, msg.address, msg.data);
 }
 
 void msix_reset(PCIDevice *dev)
@@ -569,3 +565,36 @@ void msix_unset_vector_notifiers(PCIDevice *dev)
     dev->msix_vector_release_notifier = NULL;
     dev->msix_vector_poll_notifier = NULL;
 }
+
+static void put_msix_state(QEMUFile *f, void *pv, size_t size)
+{
+    msix_save(pv, f);
+}
+
+static int get_msix_state(QEMUFile *f, void *pv, size_t size)
+{
+    msix_load(pv, f);
+    return 0;
+}
+
+static VMStateInfo vmstate_info_msix = {
+    .name = "msix state",
+    .get  = get_msix_state,
+    .put  = put_msix_state,
+};
+
+const VMStateDescription vmstate_msix = {
+    .name = "msix",
+    .fields = (VMStateField[]) {
+        {
+            .name         = "msix",
+            .version_id   = 0,
+            .field_exists = NULL,
+            .size         = 0,   /* ouch */
+            .info         = &vmstate_info_msix,
+            .flags        = VMS_SINGLE,
+            .offset       = 0,
+        },
+        VMSTATE_END_OF_LIST()
+    }
+};
