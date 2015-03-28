@@ -8114,7 +8114,6 @@ static inline void gen_intermediate_code_internal(X86CPU *cpu,
         //end
 #endif
 
-        pc_ptr = disas_insn(env, dc, pc_ptr);
         num_insns++;
         /* stop translation if indicated */
         if (dc->is_jmp)
