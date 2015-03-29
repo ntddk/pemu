@@ -1178,7 +1178,7 @@ static void do_interrupt_all(X86CPU *cpu, int intno, int is_int,
             }
 
             //yang
-            if(cpu_single_env->regs[R_EAX] == 252)
+            if(env->regs[R_EAX] == 252)
             {
                 if(pemu_hook_funcs.fini_hook) {
                     pemu_hook_funcs.fini_hook(0, 0);
@@ -2337,7 +2337,7 @@ void helper_iret_protected(CPUX86State *env, int shift, int next_eip)
 #endif
         //yang
         pemu_exec_stats.PEMU_int_level--;
-        if((cpu_single_env->hflags & HF_CPL_MASK) == 3)
+        if((env->hflags & HF_CPL_MASK) == 3)
         {
             pemu_exec_stats.PEMU_int_level = 0;
             if(pemu_exec_stats.PEMU_start_trace_syscall) {
@@ -2377,7 +2377,7 @@ void helper_sysenter(CPUX86State *env)
         if(pemu_hook_funcs.enter_syscall_hook != 0){
             pemu_hook_funcs.enter_syscall_hook(pemu_exec_stats.PEMU_pid, pin_context, SYSCALL_STANDARD_IA32_LINUX, 0);
         }
-        if(cpu_single_env->regs[R_EAX] == 252) {
+        if(env->regs[R_EAX] == 252) {
             if(pemu_hook_funcs.fini_hook) {
                 pemu_hook_funcs.fini_hook(0, 0);
                 pemu_exec_stats.PEMU_start = 0;
