@@ -452,16 +452,16 @@ void cpu_x86_update_cr0(CPUX86State *env, uint32_t new_cr0)
 #include "PEMU/pemu.h"
 void PEMU_start_PEMUThread(void);
 //yang
-void helper_find_process(target_ulong pc)
+void helper_find_process(CPUX86State *env)
 {
     if(pemu_exec_stats.PEMU_cr3 == 0 
         && pemu_exec_stats.PEMU_start)
     {   
         if(PEMU_find_process(0)) {
             PEMU_start_PEMUThread();
-            if(pemu_exec_stats.PEMU_cr3 == cpu_single_env->cr[3])
+            if(pemu_exec_stats.PEMU_cr3 == env->cr[3])
             {
-                tb_flush(cpu_single_env);
+                tb_flush(env);
                 pemu_exec_stats.PEMU_already_flush = 1;
                 pemu_exec_stats.PEMU_int_level = -1; 
             }
@@ -473,7 +473,7 @@ void cpu_x86_update_cr3(CPUX86State *env, target_ulong new_cr3)
 {
     X86CPU *cpu = x86_env_get_cpu(env);
 
-    helper_find_process(0);
+    helper_find_process(env);
     //jzeng.begin
     if(!pemu_exec_stats.PEMU_already_flush 
             && pemu_exec_stats.PEMU_start 
